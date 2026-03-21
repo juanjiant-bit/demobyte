@@ -12,6 +12,7 @@ void AudioOutputI2S::init() {
 
     pcm5102_i2s_program_init(pio_, sm_, offset_, PIN_DIN, PIN_BCLK, SAMPLE_RATE);
 
+    // Cebar FIFO con silencio
     for (int i = 0; i < 8; ++i) {
         pio_sm_put_blocking(pio_, sm_, 0u);
     }

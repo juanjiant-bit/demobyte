@@ -15,7 +15,7 @@
 .wrap_target
     pull   block      side 0b00
 
-    ; ===== Left =====
+    ; ===== Left channel =====
     set    x, 14      side 0b00
 left_loop:
     out    pins, 1    side 0b00
@@ -24,7 +24,7 @@ left_loop:
     out    pins, 1    side 0b10
     nop               side 0b11
 
-    ; ===== Right =====
+    ; ===== Right channel =====
     set    x, 14      side 0b10
 right_loop:
     out    pins, 1    side 0b10
@@ -52,11 +52,11 @@ static inline void pcm5102_i2s_program_init(PIO pio, uint sm, uint offset,
     sm_config_set_out_pins(&c, pin_din, 1);
     sm_config_set_sideset_pins(&c, pin_bclk);
 
-    // MSB first, SIN autopull
+    // MSB first, sin autopull
     sm_config_set_out_shift(&c, false, false, 32);
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
 
-    // 64 instrucciones por frame estéreo
+    // 64 ciclos/instrucciones por frame estéreo
     uint32_t sysclk = clock_get_hz(clk_sys);
     float div = (float)sysclk / (float)(sample_rate * 64u);
     sm_config_set_clkdiv(&c, div);
