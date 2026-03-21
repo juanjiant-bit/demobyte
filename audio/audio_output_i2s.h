@@ -1,30 +1,11 @@
 #pragma once
-// audio_output_i2s.h — Bytebeat Machine
-// Backend PCM5102A via PIO serial audio
-//
-// PINES (fijos, no cambiar sin actualizar el .pio):
-//   GP10 = BCLK  (BCK del módulo)
-//   GP11 = LRCK  (LCK del módulo) — debe ser BCLK+1
-//   GP12 = DIN   (DIN del módulo)
-//
-// MÓDULO GY-PCM5102 — jumpers requeridos:
-//   FMT  = sin soldar (I2S estándar; esta implementación usa frame estéreo
-//          16+16 a 32*Fs, que el PCM5102A acepta bien si el clock está correcto)
-//   SCK  = sin soldar (SCK interno del módulo)
-//   DEMP = sin soldar
-//   FLT  = sin soldar
-//   XSMT = SOLDAR a 3V3 (si no, el chip queda en mute)
-//
-// PIO: hardcodeado en PIO0/SM0.
-// WS2812 debe usar PIO1 (ver led_controller.h).
-
 #include "audio_output.h"
 #include "hardware/pio.h"
 
 class AudioOutputI2S : public AudioOutput {
 public:
     static constexpr uint8_t  PIN_BCLK    = 10;
-    static constexpr uint8_t  PIN_LRCK    = 11;   // debe ser PIN_BCLK + 1
+    static constexpr uint8_t  PIN_LRCK    = 11;   // pin_bclk + 1
     static constexpr uint8_t  PIN_DIN     = 12;
     static constexpr uint32_t SAMPLE_RATE = 44100;
 
@@ -34,7 +15,6 @@ public:
     void stop()  override {}
 
 private:
-    // Hardcodeado PIO0/SM0 — WS2812 usa PIO1
     PIO  pio_         = pio0;
     uint sm_          = 0;
     uint offset_      = 0;

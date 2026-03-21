@@ -1,0 +1,11 @@
+Audio out fix v2
+
+Changes:
+- Replaced ad-hoc 16+16 packed stream with standard Philips I2S timing.
+- Now uses 32-bit slots per channel (64 BCLK per stereo frame).
+- audio.write() pushes one 32-bit word for Left and one 32-bit word for Right.
+- 16-bit PCM is left-aligned inside each 32-bit slot, which matches PCM5102A I2S mode.
+
+Hardware reminders:
+- PCM5102A FMT must be LOW / not strapped for left-justified.
+- XSMT must be HIGH to avoid mute on boards that expose that strap.

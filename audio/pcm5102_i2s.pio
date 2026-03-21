@@ -3,26 +3,25 @@
 ; sideset bit0 = BCLK, bit1 = LRCK/WS
 ; OUT pin = DIN
 ;
-; This backend sends 16-bit stereo frames packed as:
-;   bits 31..16 = Left
-;   bits 15..0  = Right
-;
-; It sends 16-bit stereo packed as L then R. The state machine keeps a 32-bit
-; stereo frame (16 bits left + 16 bits right), so BCLK must be 32 * Fs.
-; The original version accidentally doubled BCLK/LRCK, which can leave the
-; PCM5102A locked but silent.
-.wrap_target
-    pull   block      side 0b00
-    set    x, 15      side 0b00
-left_loop:
-    out    pins, 1    side 0b00
-    jmp    x-- left_loop side 0b01
+; Standard Philips I2S transmit, 32-bit slot per channel.
+; Each channel begins with a 1-bit delay after LRCK changes.
+; Feed one 32-bit word for Left and one 32-bit word for Right.
+; For 16-bit audio, left-align the sample in the 32-bit slot.
 
-    set    x, 15      side 0b10
-right_loop:
+public entry_point:
+left_frame:
+    set    x, 30      side 0b00   ; LRCK=0, BCLK=0
+    pull   block      side 0b01   ; one BCLK after LRCK transition, no new data bit yet
+left_bits:
+    out    pins, 1    side 0b00   ; update DIN while BCLK low
+    jmp    x-- left_bits side 0b01 ; DAC samples on BCLK rising edge
+
+right_frame:
+    set    x, 30      side 0b10   ; LRCK=1, BCLK=0
+    pull   block      side 0b11   ; one BCLK after LRCK transition, no new data bit yet
+right_bits:
     out    pins, 1    side 0b10
-    jmp    x-- right_loop side 0b11
-.wrap
+    jmp    x-- right_bits side 0b11
 
 % c-sdk {
 #include "hardware/clocks.h"
@@ -31,29 +30,26 @@ right_loop:
 static inline void pcm5102_i2s_program_init(PIO pio, uint sm, uint offset,
                                              uint pin_din, uint pin_bclk,
                                              uint sample_rate) {
-    // pin_bclk = BCLK (sideset bit0), pin_bclk+1 = LRCK (sideset bit1)
     pio_gpio_init(pio, pin_din);
     pio_gpio_init(pio, pin_bclk);
     pio_gpio_init(pio, pin_bclk + 1);
 
-    pio_sm_set_consecutive_pindirs(pio, sm, pin_din,     1, true);
-    pio_sm_set_consecutive_pindirs(pio, sm, pin_bclk,    2, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_din, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_bclk, 2, true);
 
     pio_sm_config c = pcm5102_i2s_program_get_default_config(offset);
     sm_config_set_out_pins(&c, pin_din, 1);
     sm_config_set_sideset_pins(&c, pin_bclk);
-    sm_config_set_out_shift(&c, false, true, 32);  // MSB-first, autopull 32b
+    sm_config_set_out_shift(&c, false, true, 32);  // shift left/MSB first, autopull 32 bits
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
 
-    // Stereo 16-bit => 32 bit clocks por sample frame.
-    // El programa consume 2 ciclos PIO por bit clock (low/high), entonces:
-    //   clkdiv = sysclk / (BCLK * 2)
-    // donde BCLK = sample_rate * 32
-    uint32_t sysclk = clock_get_hz(clk_sys);
-    float div = (float)sysclk / (float)(sample_rate * 32u * 2u);
+    // 64 BCLK per stereo frame (32 bits left + 32 bits right).
+    // This PIO emits one full BCLK across two instructions, so divide by 2x BCLK.
+    const uint32_t sysclk = clock_get_hz(clk_sys);
+    const float div = (float)sysclk / (float)(sample_rate * 64u * 2u);
     sm_config_set_clkdiv(&c, div);
 
-    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_init(pio, sm, offset + pcm5102_i2s_offset_entry_point, &c);
     pio_sm_set_enabled(pio, sm, true);
 }
 %}

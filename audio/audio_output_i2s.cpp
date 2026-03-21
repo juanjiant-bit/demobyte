@@ -1,5 +1,3 @@
-// audio_output_i2s.cpp — Bytebeat Machine
-// PCM5102A via Philips I2S + PIO0/SM0
 #include "audio_output_i2s.h"
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
@@ -9,17 +7,13 @@
 void AudioOutputI2S::init() {
     if (initialized_) return;
 
-    // Usar la función de init del c-sdk block del .pio
-    // PIO0, SM0 — hardcodeado, no conflicts con WS2812 (que usa PIO1)
     offset_ = pio_add_program(pio_, &pcm5102_i2s_program);
     sm_     = pio_claim_unused_sm(pio_, true);
 
-    pcm5102_i2s_program_init(pio_, sm_, offset_,
-                              PIN_DIN, PIN_BCLK, SAMPLE_RATE);
+    pcm5102_i2s_program_init(pio_, sm_, offset_, PIN_DIN, PIN_BCLK, SAMPLE_RATE);
 
-    // Precargar silencio para que el PLL del PCM5102A se enganche
-    // antes de que lleguen muestras reales (evita el "pop" de arranque)
-    for (int i = 0; i < 16; ++i) {
+    // Prime the stream with bipolar zero so the DAC can lock to a valid I2S stream.
+    for (int i = 0; i < 32; ++i) {
         pio_sm_put_blocking(pio_, sm_, 0u);
     }
 
@@ -27,12 +21,10 @@ void AudioOutputI2S::init() {
 }
 
 void AudioOutputI2S::write(int16_t left, int16_t right) {
-    // Empaquetar en 32 bits: L ocupa los 16 bits altos (se emite primero),
-    // R ocupa los 16 bits bajos.
-    // El .pio hace out(1) MSB-first desde el bit 31, entonces:
-    //   bits 31..16 → canal LRCK=0 (izquierdo)
-    //   bits 15..0  → canal LRCK=1 (derecho)
-    const uint32_t frame = ((uint32_t)(uint16_t)left  << 16)
-                         |  (uint32_t)(uint16_t)right;
-    pio_sm_put_blocking(pio_, sm_, frame);
+    // Standard Philips I2S, 32-bit slots per channel.
+    // Left-align the 16-bit PCM sample into each 32-bit slot.
+    const uint32_t l = ((uint32_t)(uint16_t)left) << 16;
+    const uint32_t r = ((uint32_t)(uint16_t)right) << 16;
+    pio_sm_put_blocking(pio_, sm_, l);
+    pio_sm_put_blocking(pio_, sm_, r);
 }
