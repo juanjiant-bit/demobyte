@@ -12,22 +12,37 @@ public:
     };
 
     struct Config {
-        uint32_t discharge_us = 150;
-        uint32_t max_charge_us = 2500;
-        uint8_t calib_samples = 96;
-        float baseline_alpha_idle = 0.0040f;
-        float noise_alpha_idle = 0.050f;
-        float min_noise_us = 3.0f;
-        float max_noise_us = 90.0f;
-        float threshold_floor_us = 14.0f;
-        float threshold_noise_mul = 5.5f;
-        float release_ratio = 0.50f;
-        uint8_t integrator_on = 4;
-        uint8_t integrator_off = 1;
-        uint8_t integrator_max = 7;
+        uint32_t discharge_us;
+        uint32_t max_charge_us;
+        uint8_t calib_samples;
+        float baseline_alpha_idle;
+        float noise_alpha_idle;
+        float min_noise_us;
+        float max_noise_us;
+        float threshold_floor_us;
+        float threshold_noise_mul;
+        float release_ratio;
+        uint8_t integrator_on;
+        uint8_t integrator_off;
+        uint8_t integrator_max;
+
+        Config()
+            : discharge_us(150),
+              max_charge_us(2500),
+              calib_samples(96),
+              baseline_alpha_idle(0.0040f),
+              noise_alpha_idle(0.050f),
+              min_noise_us(3.0f),
+              max_noise_us(90.0f),
+              threshold_floor_us(14.0f),
+              threshold_noise_mul(5.5f),
+              release_ratio(0.50f),
+              integrator_on(4),
+              integrator_off(1),
+              integrator_max(7) {}
     };
 
-    void init(Config cfg = Config{});
+    void init(Config cfg = Config());
     void calibrate();
     void scan();
 
