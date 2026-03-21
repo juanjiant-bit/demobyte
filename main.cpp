@@ -1,103 +1,57 @@
-// main.cpp — BYT3 DAC / I2S VALIDATE MIN
-// ─────────────────────────────────────────────────────────────────────────────
-// Firmware mínimo para validar SOLO salida de audio por I2S.
-//
-// LO QUE HACE:
-//   Core0 — emite una cuadrada fija 1 kHz, muy obvia, al PCM5102A
-//   Core1 — LED heartbeat + lectura opcional del pote (solo debug visual)
-//
-// OBJETIVO:
-//   Confirmar rápidamente que la cadena física está viva:
-//   RP2040 → I2S (GP10/11/12) → PCM5102A → monitores / amp
-//
-// PINOUT USADO:
-//   GP10 → PCM5102 BCK
-//   GP11 → PCM5102 LCK / LRCK
-//   GP12 → PCM5102 DIN
-//   GP25 → LED onboard
-//   GP26 → pote opcional (solo para cambiar el patrón de blink)
-// ─────────────────────────────────────────────────────────────────────────────
-
 #include "pico/stdlib.h"
-#include "pico/multicore.h"
+#include "hardware/pio.h"
 #include "hardware/clocks.h"
+#include "audio_i2s.pio.h"
 
-#include "audio/audio_output_i2s.h"
-#include "io/pot_handler.h"
-
-static AudioOutputI2S g_audio_out;
-static PotHandler     g_pot;
-
-static volatile bool  g_audio_ok     = false;
-static volatile float g_pot_value    = 0.0f;
-static volatile bool  g_fast_blink   = false;
+static constexpr uint PIN_BCLK = 10;   // GP10 -> BCK
+static constexpr uint PIN_LRCK = 11;   // GP11 -> LCK/LRCK
+static constexpr uint PIN_DIN  = 12;   // GP12 -> DIN
+static constexpr uint PIN_LED  = 25;
 
 static constexpr uint32_t SAMPLE_RATE = 44100;
-static constexpr uint32_t TONE_HZ     = 1000;
-static constexpr int16_t  AMP         = 30000;
+static constexpr int16_t AMP = 28000;
+static constexpr uint32_t TONE_HZ = 440;
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CORE 0 — Audio engine
-// ─────────────────────────────────────────────────────────────────────────────
-static void audio_core0_main() {
-    g_audio_out.init();
-    g_audio_ok = true;
+static inline void i2s_init_16b_stereo(PIO pio, uint sm, uint offset) {
+    audio_i2s_program_init(pio, sm, offset, PIN_DIN, PIN_BCLK);
 
-    uint32_t phase = 0;
-    const uint32_t half_period = SAMPLE_RATE / (TONE_HZ * 2u);
+    // 32 BCLK por frame estéreo (16+16), 2 instrucciones por bit.
+    const float div = (float)clock_get_hz(clk_sys) / (float)(SAMPLE_RATE * 32u * 2u);
+    pio_sm_set_clkdiv(pio, sm, div);
+    pio_sm_set_enabled(pio, sm, true);
 
-    while (true) {
-        for (uint16_t i = 0; i < 256; ++i) {
-            int16_t s = (phase < half_period) ? AMP : (int16_t)-AMP;
-            phase++;
-            if (phase >= (half_period * 2u)) {
-                phase = 0;
-            }
-
-            g_audio_out.write(s, s);
-        }
+    for (int i = 0; i < 16; ++i) {
+        pio_sm_put_blocking(pio, sm, 0u);
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// CORE 1 — LED + pot opcional
-// ─────────────────────────────────────────────────────────────────────────────
-static void input_core1_main() {
-    g_pot.init();
-
-    uint32_t counter = 0;
-
-    while (true) {
-        g_pot.poll();
-        g_pot_value = g_pot.get();
-
-        // Solo feedback visual: pote arriba = blink más rápido
-        g_fast_blink = (g_pot_value > 0.55f);
-
-        ++counter;
-        uint32_t period = g_audio_ok ? (g_fast_blink ? 12u : 40u) : 6u;
-        if (counter >= period) {
-            counter = 0;
-            gpio_xor_mask(1u << 25);
-        }
-
-        sleep_ms(10);
-    }
+static inline void i2s_write_stereo(PIO pio, uint sm, int16_t left, int16_t right) {
+    const uint32_t frame = ((uint32_t)(uint16_t)left << 16) | (uint16_t)right;
+    pio_sm_put_blocking(pio, sm, frame);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// MAIN
-// ─────────────────────────────────────────────────────────────────────────────
 int main() {
-    set_sys_clock_khz(200000, true);
+    set_sys_clock_khz(153600, true); // múltiplo limpio de 44.1k*32*2
     stdio_init_all();
 
-    gpio_init(25);
-    gpio_set_dir(25, GPIO_OUT);
-    gpio_put(25, 0);
+    gpio_init(PIN_LED);
+    gpio_set_dir(PIN_LED, GPIO_OUT);
 
-    multicore_launch_core1(input_core1_main);
-    audio_core0_main();
+    PIO pio = pio0;
+    uint sm = 0;
+    const uint offset = pio_add_program(pio, &audio_i2s_program);
+    i2s_init_16b_stereo(pio, sm, offset);
 
-    return 0;
+    uint32_t phase = 0;
+    const uint32_t period = SAMPLE_RATE / TONE_HZ;
+
+    while (true) {
+        for (int i = 0; i < 128; ++i) {
+            const int16_t s = (phase < (period / 2)) ? AMP : -AMP;
+            i2s_write_stereo(pio, sm, s, s);
+            phase++;
+            if (phase >= period) phase = 0;
+        }
+        gpio_xor_mask(1u << PIN_LED);
+    }
 }
