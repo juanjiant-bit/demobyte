@@ -12,19 +12,19 @@ void AudioOutputI2S::init() {
 
     pcm5102_i2s_program_init(pio_, sm_, offset_, PIN_DIN, PIN_BCLK, SAMPLE_RATE);
 
-    // Prime the stream with bipolar zero so the DAC can lock to a valid I2S stream.
-    for (int i = 0; i < 32; ++i) {
-        pio_sm_put_blocking(pio_, sm_, 0u);
+    // Prime the DAC with a short run of non-zero toggling so it definitely locks
+    // and does not remain in zero-data mute during initial bring-up.
+    for (int i = 0; i < 64; ++i) {
+        const uint16_t a = (i & 1) ? 0x2000u : 0xE000u;
+        const uint32_t frame = ((uint32_t)a << 16) | a;
+        pio_sm_put_blocking(pio_, sm_, frame);
     }
 
     initialized_ = true;
 }
 
 void AudioOutputI2S::write(int16_t left, int16_t right) {
-    // Standard Philips I2S, 32-bit slots per channel.
-    // Left-align the 16-bit PCM sample into each 32-bit slot.
-    const uint32_t l = ((uint32_t)(uint16_t)left) << 16;
-    const uint32_t r = ((uint32_t)(uint16_t)right) << 16;
-    pio_sm_put_blocking(pio_, sm_, l);
-    pio_sm_put_blocking(pio_, sm_, r);
+    const uint32_t frame = ((uint32_t)(uint16_t)left << 16)
+                         |  (uint32_t)(uint16_t)right;
+    pio_sm_put_blocking(pio_, sm_, frame);
 }

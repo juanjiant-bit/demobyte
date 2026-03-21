@@ -18,19 +18,19 @@ int main() {
 
     printf("PCM5102A tone test start\n");
     printf("GP10=BCK GP11=LRCK GP12=DIN\n");
+    printf("FMT low (I2S), XSMT high (unmute), SCK not connected\n");
 
     uint32_t phase = 0;
     bool led = false;
     uint32_t led_div = 0;
 
     while (true) {
-        // 440 Hz square wave, bien audible
         phase += 440;
         if (phase >= AudioOutputI2S::SAMPLE_RATE) {
             phase -= AudioOutputI2S::SAMPLE_RATE;
         }
 
-        const int16_t s = (phase < (AudioOutputI2S::SAMPLE_RATE / 2)) ? 22000 : -22000;
+        const int16_t s = (phase < (AudioOutputI2S::SAMPLE_RATE / 2)) ? 24000 : -24000;
         audio.write(s, s);
 
         if (++led_div >= 22050) {
