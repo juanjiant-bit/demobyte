@@ -1,0 +1,44 @@
+name: Build UF2
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential python3
+
+      - name: Clone Pico SDK
+        run: |
+          git clone --depth=1 https://github.com/raspberrypi/pico-sdk.git "$HOME/pico-sdk"
+          cd "$HOME/pico-sdk"
+          git submodule update --init
+
+      - name: Configure
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/../pico-sdk
+        run: |
+          cmake -S . -B build -G Ninja -DPICO_SDK_PATH="$HOME/pico-sdk" -DPICO_BOARD=pico
+
+      - name: Build
+        run: cmake --build build --config Release -j 2
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: byt3_validate_dac_sweep_build
+          path: |
+            build/*.uf2
+            build/*.bin
+            build/*.hex
+            build/*.elf
