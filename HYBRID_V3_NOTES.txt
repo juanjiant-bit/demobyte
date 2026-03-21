@@ -1,0 +1,24 @@
+HYBRID V3
+
+Objetivo:
+- combinar lo mejor de la rama simple con lo rescatable de byt3_validate
+- mantener todo single-core y fácil de depurar
+
+Cambios principales:
+- se reemplazó el lector de pads por una versión híbrida inspirada en la calibración/histéresis de Claude
+- se mantuvo el sinte simple anterior, con triggers por just_pressed explícitos
+- se mantuvo I2S PCM5102A y ADC directo del pote
+- se recortó el proyecto a los archivos mínimos para iterar más rápido
+
+No incluido:
+- multicore
+- overclock
+- bytebeat graph complejo
+- MIDI, OLED, secuencer, flash, leds externos
+
+Punto de ajuste rápido si hiciera falta:
+- threshold_floor_us
+- threshold_noise_mul
+- discharge_us
+- max_charge_us
+- baseline_alpha_idle
