@@ -7,9 +7,10 @@
 ;   bits 31..16 = Left
 ;   bits 15..0  = Right
 ;
-; It uses a 16-bit-per-channel left-justified style stream. On many PCM5102A
-; boards this works directly; if a given breakout is strapped strictly for
-; standard I2S only, further timing adjustment may be needed.
+; It sends 16-bit stereo packed as L then R. The state machine keeps a 32-bit
+; stereo frame (16 bits left + 16 bits right), so BCLK must be 32 * Fs.
+; The original version accidentally doubled BCLK/LRCK, which can leave the
+; PCM5102A locked but silent.
 .wrap_target
     pull   block      side 0b00
     set    x, 15      side 0b00
@@ -44,10 +45,12 @@ static inline void pcm5102_i2s_program_init(PIO pio, uint sm, uint offset,
     sm_config_set_out_shift(&c, false, true, 32);  // MSB-first, autopull 32b
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
 
-    // Clock: necesitamos BCLK = sample_rate * 32 bits * 2 canales
-    // PIO corre a 2 ciclos por bit → sysclk_div = sysclk / (bclk * 2)
+    // Stereo 16-bit => 32 bit clocks por sample frame.
+    // El programa consume 2 ciclos PIO por bit clock (low/high), entonces:
+    //   clkdiv = sysclk / (BCLK * 2)
+    // donde BCLK = sample_rate * 32
     uint32_t sysclk = clock_get_hz(clk_sys);
-    float div = (float)sysclk / (float)(sample_rate * 32u * 2u * 2u);
+    float div = (float)sysclk / (float)(sample_rate * 32u * 2u);
     sm_config_set_clkdiv(&c, div);
 
     pio_sm_init(pio, sm, offset, &c);

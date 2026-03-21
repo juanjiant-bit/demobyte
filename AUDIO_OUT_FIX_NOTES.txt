@@ -1,0 +1,16 @@
+Cambios aplicados para corregir la salida de audio:
+
+1) audio/pcm5102_i2s.pio
+   - se corrigio el clock divider: el backend original duplicaba BCLK/LRCK.
+   - ahora usa BCLK = sample_rate * 32 para el frame estereo de 16+16 bits.
+
+2) main.cpp
+   - se agrego un tono cuadrado de diagnostico de ~1.8 s al arranque.
+   - esto permite verificar la ruta I2S/DAC incluso si los pads todavia no disparan.
+
+3) audio/audio_output_i2s.h
+   - comentarios ajustados para reflejar el formato real del stream.
+
+Si despues de este fix sigue sin sonar, el proximo sospechoso fuerte es el strap XSMT/FMT
+del modulo PCM5102A o el orden exacto de fases del PIO; pero el bug de clock duplicado
+era lo primero que habia que corregir.

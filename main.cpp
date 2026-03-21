@@ -38,11 +38,14 @@ int main() {
     absolute_time_t last_control = get_absolute_time();
     absolute_time_t last_blink = get_absolute_time();
     absolute_time_t last_print = get_absolute_time();
+    const absolute_time_t boot_time = get_absolute_time();
     bool led = false;
+    float startup_phase = 0.0f;
 
     printf("simple validation v3 hybrid start\n");
     printf("I2S GP10/11/12 | POT GP26 | ROW GP5 | PADS GP8 GP9 GP13 GP14\n");
     printf("No tocar pads durante el arranque/calibracion.\n");
+    printf("Deberias escuchar un tono corto de diagnostico durante ~1.8 s al boot.\n");
 
     while (true) {
         const absolute_time_t now = get_absolute_time();
@@ -111,7 +114,19 @@ int main() {
             );
         }
 
-        const int16_t s = synth.render_sample();
+        int16_t s = 0;
+
+        // Tono de diagnóstico al arranque: confirma la ruta RP2040 -> PIO -> PCM5102A
+        // incluso si los pads todavía no están bien calibrados.
+        if (absolute_time_diff_us(boot_time, now) < 1800000) {
+            startup_phase += 220.0f / static_cast<float>(AudioOutputI2S::SAMPLE_RATE);
+            if (startup_phase >= 1.0f) startup_phase -= 1.0f;
+            const float v = (startup_phase < 0.5f) ? 0.22f : -0.22f;
+            s = static_cast<int16_t>(v * 32767.0f);
+        } else {
+            s = synth.render_sample();
+        }
+
         audio.write(s, s);
     }
 }

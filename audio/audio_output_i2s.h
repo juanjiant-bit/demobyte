@@ -1,6 +1,6 @@
 #pragma once
 // audio_output_i2s.h — Bytebeat Machine
-// Backend PCM5102A via Philips I2S + PIO
+// Backend PCM5102A via PIO serial audio
 //
 // PINES (fijos, no cambiar sin actualizar el .pio):
 //   GP10 = BCLK  (BCK del módulo)
@@ -8,7 +8,8 @@
 //   GP12 = DIN   (DIN del módulo)
 //
 // MÓDULO GY-PCM5102 — jumpers requeridos:
-//   FMT  = sin soldar (I2S estándar, FMT=0 via pull-down interno)
+//   FMT  = sin soldar (I2S estándar; esta implementación usa frame estéreo
+//          16+16 a 32*Fs, que el PCM5102A acepta bien si el clock está correcto)
 //   SCK  = sin soldar (SCK interno del módulo)
 //   DEMP = sin soldar
 //   FLT  = sin soldar
