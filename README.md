@@ -1,53 +1,95 @@
-# RP2040 + PCM5102 minimal I2S hardware test
+# demobyte_i2s_pot_pads
 
-Proyecto mínimo para validar un DAC PCM5102 con un RP2040 usando PIO y **sin DMA**.
+Firmware mínimo de validación para tu hardware actual:
 
-## Pines
+- **I2S + PCM5102** funcionando en RP2040 por PIO
+- **1 pot** leído por el **CD4051**
+- **pads capacitivos 3x5** usando el mismo pinout del stage11
+- build por **GitHub Actions** con artifact `.uf2`
 
-- GP10 -> BCK
-- GP11 -> LRCK / LCK
-- GP12 -> DIN
-- GND común
-- XSMT -> 3.3V **obligatorio**
+## Pinout usado
 
-## Qué hace
+### Audio I2S
+- `GP10 -> BCK`
+- `GP11 -> LRCK / LCK`
+- `GP12 -> DIN`
+- `XSMT -> 3.3V`
+- `GND común`
 
-Genera una onda cuadrada continua en ambos canales para comprobar rápidamente si el enlace I2S funciona.
+### MUX de pots (CD4051)
+- `GP2 = S0`
+- `GP3 = S1`
+- `GP4 = S2`
+- `GP26 = ADC0 / COM`
 
-## Formato usado
+En esta demo se usa **P0 = CH0** para controlar la frecuencia.
 
-Este test usa **Philips I2S real con slots de 32 bits por canal**.
+### Pads capacitivos (matriz 3x5)
+Rows:
+- `GP5 = ROW0`
+- `GP6 = ROW1`
+- `GP7 = ROW2`
 
-Eso significa:
-- `BCLK = Fs * 64`
-- 16 bits de audio útiles
-- cada sample de 16 bits se envía **alineado a la izquierda** dentro de un slot de 32 bits
-- se escribe **un word de 32 bits por canal**
+Cols:
+- `GP8  = COL0`
+- `GP9  = COL1`
+- `GP13 = COL2`
+- `GP14 = COL3`
+- `GP15 = COL4`
 
-### Por qué no empaqueto L+R en un único `uint32_t`
+Matriz física:
 
-Porque para respetar correctamente el desfase de 1 bit de Philips I2S con una implementación PIO mínima y clara, lo más robusto es emitir **un slot estándar de 32 bits por canal**.
+|      | GP8 | GP9 | GP13 | GP14 | GP15 |
+|------|-----|-----|------|------|------|
+| GP5  | REC | PLAY | SHIFT | SNAP1 | SNAP2 |
+| GP6  | MUTE | HAT | SNAP3 | SNAP4 | SNAP5 |
+| GP7  | KICK | SNARE | SNAP6 | SNAP7 | SNAP8 |
 
-Para el PCM5102 esto suele ser más seguro que intentar una variante compacta 16+16 dentro de un único word.
+Circuito esperado por pad:
+- `ROW -- 1MΩ -- PAD -- COL`
+- `100nF` entre cada **ROW** y **GND**
+- columnas **sin pull interno**
 
-## Compilación
+## Qué hace esta demo
 
-Asumiendo que ya tenés instalado el Pico SDK:
+- Al arrancar, **core 0** se dedica solo al audio I2S.
+- **core 1** escanea el MUX y los pads para no cortar el audio.
+- El **pot CH0** controla la frecuencia del tono.
+- Si tocás pads, la demo fuerza frecuencias conocidas para validar la matriz.
+- `SHIFT` hace una prueba estéreo: izquierda = frecuencia del pote, derecha = 2x.
 
-```bash
-mkdir build
-cd build
-cmake ..
-make -j4
-```
+## Mapa de prueba de pads
 
-Esto genera `.uf2`, `.elf`, `.bin` y el header del PIO automáticamente.
+- `REC`   -> 110 Hz
+- `PLAY`  -> 220 Hz
+- `SHIFT` -> estéreo split (L=pot, R=2x)
+- `SNAP1` -> C4
+- `SNAP2` -> D4
+- `MUTE`  -> E4 (además baja un poco el volumen)
+- `HAT`   -> F4
+- `SNAP3` -> G4
+- `SNAP4` -> A4
+- `SNAP5` -> B4
+- `KICK`  -> C5
+- `SNARE` -> D5
+- `SNAP6` -> E5
+- `SNAP7` -> F5
+- `SNAP8` -> G5
 
-## Notas
+## Uso
 
-- No usa MCLK/SCK. El PCM5102 puede reconstruir clock internamente desde BCK/LRCK.
-- Si no escuchás nada, revisá primero:
-  - XSMT a 3.3V
-  - masa común
-  - DIN/BCK/LRCK en el orden correcto
-  - que el módulo no esté muteado por jumper o soldadura
+1. Encendé el equipo **sin tocar los pads** durante el arranque.
+2. Esperá la calibración inicial de pads.
+3. Mové el pot en `CH0` y escuchá cómo cambia la frecuencia.
+4. Tocá pads y comprobá que cada uno dispara un tono distinto.
+5. Tocá `SHIFT` para confirmar que L y R se separan.
+
+## GitHub Actions
+
+El workflow incluido compila y sube un artifact:
+- `demobyte-i2s-pot-pads-uf2`
+
+## Nota importante
+
+Esta demo está pensada para **validación de hardware**, no para performance final.
+El escaneo capacitivo y del MUX va en el segundo core para que el audio I2S siga sonando limpio sin DMA.

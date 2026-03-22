@@ -1,75 +1,52 @@
-name: Build UF2
+name: Build RP2040 Project
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main, master ]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            cmake \
-            ninja-build \
-            gcc-arm-none-eabi \
-            libnewlib-arm-none-eabi \
-            build-essential \
-            python3
+          sudo apt update
+          sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential
 
       - name: Clone Pico SDK
         run: |
-          git clone --depth=1 https://github.com/raspberrypi/pico-sdk.git "$HOME/pico-sdk"
-          cd "$HOME/pico-sdk"
+          git clone https://github.com/raspberrypi/pico-sdk.git --depth=1
+          cd pico-sdk
           git submodule update --init
 
-      - name: Find project directory
-        id: findproj
-        shell: bash
-        run: |
-          PROJECT_DIR=$(find . -name CMakeLists.txt \
-            -not -path "./.github/*" \
-            -not -path "./build/*" \
-            | head -n 1 | xargs dirname)
-
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "No se encontró ningún CMakeLists.txt en el repo"
-            exit 1
-          fi
-
-          echo "Proyecto encontrado en: $PROJECT_DIR"
-          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+      - name: Set Pico SDK path
+        run: echo "PICO_SDK_PATH=${{ github.workspace }}/pico-sdk" >> $GITHUB_ENV
 
       - name: Configure
         run: |
-          cmake -S "${{ steps.findproj.outputs.project_dir }}" \
-                -B "${{ steps.findproj.outputs.project_dir }}/build" \
-                -G Ninja \
-                -DPICO_SDK_PATH="$HOME/pico-sdk" \
-                -DPICO_BOARD=pico
+          mkdir -p build
+          cd build
+          cmake ..
 
       - name: Build
         run: |
-          cmake --build "${{ steps.findproj.outputs.project_dir }}/build" --config Release -j 2
+          cd build
+          cmake --build . -j4
 
-      - name: Show build outputs
+      - name: List build outputs
         run: |
-          find "${{ steps.findproj.outputs.project_dir }}/build" -maxdepth 2 -type f | sort
+          echo "Build contents:"
+          find build -type f | sort
 
-      - name: Upload artifacts
+      - name: Upload UF2 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: byt3_validate_dac_sweep_build
+          name: rp2040-uf2
           path: |
-            ${{ steps.findproj.outputs.project_dir }}/build/*.uf2
-            ${{ steps.findproj.outputs.project_dir }}/build/*.bin
-            ${{ steps.findproj.outputs.project_dir }}/build/*.hex
-            ${{ steps.findproj.outputs.project_dir }}/build/*.elf
+            build/*.uf2
+            build/**/*.uf2
+          if-no-files-found: error

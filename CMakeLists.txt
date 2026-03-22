@@ -1,29 +1,34 @@
 cmake_minimum_required(VERSION 3.13)
 
-include(pico_sdk_import.cmake)
+include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 
-project(rp2040_pcm5102_i2s_test C CXX ASM)
+project(demobyte_i2s_pot_pads C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
 pico_sdk_init()
 
-add_executable(rp2040_pcm5102_i2s_test
+add_executable(demobyte_i2s_pot_pads
     main.cpp
+    io/adc_handler.cpp
+    io/cap_pad_handler.cpp
 )
 
-pico_generate_pio_header(rp2040_pcm5102_i2s_test
+pico_generate_pio_header(demobyte_i2s_pot_pads
     ${CMAKE_CURRENT_LIST_DIR}/pcm5102_i2s.pio
 )
 
-target_link_libraries(rp2040_pcm5102_i2s_test
+target_link_libraries(demobyte_i2s_pot_pads
     pico_stdlib
+    pico_multicore
     hardware_pio
     hardware_clocks
+    hardware_adc
 )
 
-target_include_directories(rp2040_pcm5102_i2s_test PRIVATE
+target_include_directories(demobyte_i2s_pot_pads PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/io
 )
 
-pico_add_extra_outputs(rp2040_pcm5102_i2s_test)
+pico_add_extra_outputs(demobyte_i2s_pot_pads)
