@@ -15,7 +15,15 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
+<<<<<<< HEAD
           sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential
+=======
+          sudo apt install -y \
+            cmake \
+            gcc-arm-none-eabi \
+            libnewlib-arm-none-eabi \
+            build-essential
+>>>>>>> 2d022f1fc6bc57c4618b78dbc53384ae77b4cc10
 
       - name: Clone Pico SDK
         run: |
@@ -40,7 +48,11 @@ jobs:
       - name: List build outputs
         run: |
           echo "Build contents:"
+<<<<<<< HEAD
           find build -type f | sort
+=======
+          find build -maxdepth 2 -type f | sort
+>>>>>>> 2d022f1fc6bc57c4618b78dbc53384ae77b4cc10
 
       - name: Upload UF2 artifact
         uses: actions/upload-artifact@v4
