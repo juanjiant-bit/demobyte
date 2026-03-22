@@ -9,6 +9,7 @@ jobs:
 build:
 runs-on: ubuntu-latest
 
+```
 steps:
   - name: Checkout repo
     uses: actions/checkout@v4
@@ -24,10 +25,10 @@ steps:
       cd pico-sdk
       git submodule update --init
 
-  - name: Set environment
+  - name: Set PICO_SDK_PATH
     run: echo "PICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk" >> $GITHUB_ENV
 
-  - name: Configure project
+  - name: Configure
     run: |
       mkdir build
       cd build
@@ -43,3 +44,4 @@ steps:
     with:
       name: pico-uf2
       path: build/*.uf2
+```
