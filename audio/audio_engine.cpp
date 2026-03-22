@@ -1707,7 +1707,12 @@ void AudioEngine::process_one_sample() {
 
     // Procesar únicamente scene+voices por DSP.
     int16_t synth_fx_l = (int16_t)std::clamp((int32_t)((scene_l + voice_l) * 32767.0f), -32768, 32767);
-    int16_t synth_fx_r = (int16_t)std::clamp((int32_t)((scene_r + voice_r) * 32767.0f), -32768, 32767);
+   int32_t sample = (int32_t)((scene_r + voice_r) * 32767.0f);
+
+if (sample > 32767) sample = 32767;
+if (sample < -32768) sample = -32768;
+
+int16_t synth_fx_r = (int16_t)sample;
     dsp_.process(synth_fx_l, synth_fx_r);
 
     int32_t out_l = 0;
