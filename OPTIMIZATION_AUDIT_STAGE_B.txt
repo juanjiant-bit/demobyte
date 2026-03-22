@@ -1,0 +1,17 @@
+YUY0 optimization audit — pass B
+
+Focus: DspChain hot-path tightening.
+
+Changes applied:
+- Chorus buffer changed to power-of-two (2048 samples) to replace modulo with bitmask wraps in the hot path.
+- DspChain now caches last control values internally and ignores redundant setter pushes.
+- DspChain maintains an active FX bitmask so process() does not re-query each module via float threshold checks every sample.
+- Delay wet duck got a fast audio-rate setter used from AudioEngine, avoiding clamp/branch work on every sample because caller already guarantees [0,1].
+
+Why these are coherent:
+- They do not change architecture or timing model.
+- They target recurring per-sample costs and cross-core/control-rate churn.
+- They keep sound design behavior essentially intact while reducing hot-path overhead.
+
+Known tradeoff:
+- Chorus now uses 2048 samples instead of 1764, adding ~1.1 KB RAM, but enabling cheap wrap arithmetic.

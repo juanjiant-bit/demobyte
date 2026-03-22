@@ -1,0 +1,16 @@
+Stage 4F — Layer morph
+
+Added:
+- layer_morph_macro_ cached at block-rate from macro * tonal
+- real-time morph shaping across:
+  * bytebeat
+  * operator
+  * float voice
+  * floatbeat
+- note_voice gets stronger morph movement
+- snapshot_voice gets a gentler version for stability
+
+Intent:
+- allow expressive transitions from discrete/glitchy to deeper/continuous
+- keep total gain normalized after morph
+- make the instrument feel more performative without changing the core routing

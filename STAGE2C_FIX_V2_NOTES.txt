@@ -1,0 +1,20 @@
+
+YUY0 Stage 2C-fix v2
+
+Changes in this pass:
+- Fixed snapshot_voice local algo_trim declaration to avoid probable compile error.
+- Aligned note_voice operator frequency with the actual MIDI note via Quantizer::note_to_freq(...),
+  keeping octave FX and the existing pitch transient.
+- Made snapshot operator envelope explicitly respect latched snapshots:
+  when the snapshot is latched and env_step_q16 == 0, the operator layer sustains at a controlled level
+  instead of decaying away while the base snapshot remains active.
+
+Why these fixes:
+- They remove a likely build break.
+- They eliminate a musical inconsistency between operator pitch and played pitch.
+- They make snapshot voice behavior explicit instead of accidental.
+
+Validation performed:
+- Static inspection of audio_engine.cpp after patching.
+- Local syntax-only compile attempted with stub Pico header.
+- No full firmware compile possible in this environment because the Pico SDK/toolchain is not installed.

@@ -1,0 +1,23 @@
+Stage 3C — Float low-end and controllable depth
+
+Applied:
+- Added low_depth_macro_ and float_body_macro_ in AudioEngine.
+- Mapped them at block-rate from macro/tonal context and routed low_depth to DrumEngine.
+- Kick now has a controllable sub layer tied to low_depth.
+- NoteVoice and SnapshotVoice algorithms now add a low-frequency float/operator body layer with per-algorithm weight.
+- Subgrave is no longer effectively fixed:
+  * idle floor depends on low_depth
+  * active peak depends on low_depth
+  * kick ducks sub harder as low_depth increases
+  * final sub mix depends on low_depth and macro motion density
+- Final master mix now adds sub as its own bus instead of injecting it directly into voice_m.
+
+Intent:
+- Depth should not depend only on a constant sub oscillator.
+- Low-end should increasingly come from the float/operator layer itself.
+- low_depth controls how much foundation is present.
+- float_body controls how much low-end is born inside the voice algorithms.
+
+Limitations:
+- This pass does not yet add true floatbeat formula evaluation.
+- It is a bridge stage: more low-end resolution from the operator/float side, with controlled sub support.

@@ -1,0 +1,16 @@
+Optimization audit pass H
+
+Applied:
+- LeadOsc hot-path optimization:
+  * feed_bytebeat() now slews the modulator in Q15 instead of float.
+  * set_mod_depth() caches FM/AM amounts as fixed-point (Q12/Q14).
+  * process() now applies FM/AM mostly with integer math.
+  * portamento slews delta directly instead of recomputing freq->delta with floats each sample.
+- AudioEngine voice/lead caching:
+  * NoteVoice caches base_freq_hz on NOTE_ON.
+  * refresh_control_block() caches root_freq_cached_ once per block.
+  * note voice operator layer, snapshot root voice and sub now reuse cached frequencies.
+
+Why this pass:
+- Lead oscillator and note/root quantization were still part of the always-on hot path.
+- These changes reduce float and repeated Quantizer calls in Core0 while preserving the current musical architecture.

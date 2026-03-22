@@ -1,0 +1,18 @@
+Stage 6M — Merged final iteration
+
+Base:
+- started from the latest internal tree
+- borrowed the SnapshotVoice / README correction idea from Claude's iteration where useful
+
+Applied:
+- kept/cleaned SnapshotVoice morph + dry routing
+- cleaned duplicate clamp noise in audio_engine.cpp
+- unified floatbeat_seed.h around float_ops.h
+- ensured no lingering fb_* helper calls
+- kept hot-path wrap helpers on int-cast instead of floorf
+- enforced op_pm signature consistency
+- kept DspChain STUTTER enum/mask/reset sane
+- updated README from the external iteration when available
+
+Intent:
+- leave the tree as consistent and flash-ready as possible before real compile + hardware listening.

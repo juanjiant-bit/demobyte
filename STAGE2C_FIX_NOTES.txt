@@ -1,0 +1,19 @@
+
+YUY0 Stage 2C-fix sanity pass
+
+Applied fixes:
+- Removed per-sample reset of note_voice_.op_env and snapshot_voice_.op_env.
+  Operator decay now keeps real state across samples and behaves as an actual secondary envelope.
+- Kept the main note/snapshot envelope in the final mix path, so releases remain stable.
+- Added conservative per-algorithm trims for note and snapshot operator algorithms to reduce loudness jumps.
+- Delay wet duck now affects only the wet return, not the feedback write path.
+- Unified DelayLine default div_index_ to match clear() default (1/4 note).
+
+Not changed yet:
+- NoteVoice.degree field name is still kept for compatibility, even though it stores a MIDI note number.
+- Voice comb remains mono/shared to avoid widening behavior changes before listening tests.
+
+Validation performed:
+- Searched and fixed the exact inconsistent code paths in audio/audio_engine.cpp and dsp/delay_line.h.
+- Confirmed operators.h/operators.cpp remain consistent.
+- Static syntax-level sanity checks were limited by unavailable Pico SDK in this environment.

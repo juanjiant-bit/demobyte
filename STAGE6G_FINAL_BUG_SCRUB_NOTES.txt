@@ -1,0 +1,15 @@
+Stage 6G — Final bug scrub
+
+Defensive fixes:
+- floatbeat_seed.h now clamps base_hz and body in both floatbeat functions.
+  This reduces the chance of weird behavior if an upstream routing path feeds extreme values.
+- audio_engine.cpp now clamps smoothed control macros after update:
+  * low_depth_macro_
+  * float_body_macro_
+  * layer_morph_macro_
+  * floatbeat_mix_macro_
+  * floatbeat_dry_macro_
+
+Why this pass:
+- After many integration passes, the remaining risk is mostly edge-case drift and out-of-range control values.
+- These are low-risk hardening changes intended to leave the tree in a safer state before calibration/tuning.

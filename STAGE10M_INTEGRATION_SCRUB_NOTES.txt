@@ -1,0 +1,21 @@
+Stage 10M — Integration scrub for transport coupling
+
+Focus:
+- make Stage 10L safer to integrate with the current tree
+- provide thin StateManager accessors for transport coupling
+- preserve fallback behavior when transport state is not yet reliable
+
+Applied:
+- Added/declared thin StateManager accessors:
+  * get_current_step_index()
+  * is_transport_running()
+- Added lightweight backing fields in StateManager:
+  * current_step_index_
+  * transport_running_
+- Mirrored obvious play/stop and step assignments to those fields when recognizable
+- Made AudioEngine's transport-coupled bass logic require a valid step index before locking
+- If transport state is not yet valid, the previous BPM-derived fallback still works
+
+Intent:
+- reduce integration risk before deeper sequencer coupling
+- keep the bass engine moving even if transport exposure is incomplete

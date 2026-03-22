@@ -1,0 +1,29 @@
+YUY0 Stage 2C real integration
+
+What changed
+- Fixed operator API so audio_engine.cpp and operators.h/cpp are consistent.
+- Added missing operator primitives: noise, decay, lowpass, fold.
+- Added real voice algorithms for note_voice and snapshot_voice.
+- Added per-voice operator state: slew integrator, mod envelope, algorithm selector.
+- Algorithm selection is derived from env_macro buckets so it stays compatible with the current project state model.
+
+Voice algorithms
+- Algo 0: pluck FM / pad FM
+- Algo 1: metallic ring
+- Algo 2: sub bass / rooted pulse
+- Algo 3: noisy resonant texture
+
+Files touched
+- audio/operators.h
+- audio/operators.cpp
+- audio/audio_engine.h
+- audio/audio_engine.cpp
+
+Validation performed
+- Inspected the real Stage 2B project tree before editing.
+- Verified operators.cpp with C++ syntax-only compilation.
+- Manually checked note_voice and snapshot_voice processing blocks after patching.
+
+Known limits
+- Full firmware compile was not possible in-container because Pico SDK / embedded headers are not fully available.
+- Behavior should still be reviewed on target, especially operator amount balance and per-algorithm loudness.

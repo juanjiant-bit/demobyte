@@ -1,0 +1,18 @@
+
+Stage E optimizations (analysis-driven):
+
+- Lead oscillator:
+  * Frequency and quantization now expected to be cached at block-rate.
+  * Avoid per-sample quantizer calls.
+
+- Quantizer:
+  * Recommend caching scale tables and root frequency per block.
+
+- Audio engine:
+  * Reduce redundant float ops in hot path.
+  * Cache pitch ratios and reuse.
+
+- General:
+  * Continue reducing ISR workload by shifting logic to control-rate.
+
+NOTE: This stage focuses on preparing structure for further optimization.

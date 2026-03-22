@@ -1,0 +1,13 @@
+Stage 10B — Bug scrub / consistency pass for macro core
+
+Fixed:
+- Corrected AudioEngine to use the real DSP member (`dsp_`) for the dual-filter call.
+  This was the main compile-breaker risk introduced by the previous stage.
+- Clamped ModulationBus outputs after derivation to keep Stage 10A conservative and bounded.
+- Made `note_fold_mod` affect the existing synth shaper explicitly, instead of only the FM layer.
+- Reduced harmonic support layer level slightly to avoid overstacking in early tests.
+- Cleaned ModulationBus indentation/structure in audio_engine.h for consistency.
+
+Intent:
+- keep the new macro-core stage buildable and safer
+- remove obvious structural issues before the next behavioral expansion

@@ -1,0 +1,10 @@
+STAGE12 stability pass applied by ChatGPT
+
+Changes:
+- Fixed main.cpp build blocker: g_state_mgr -> g_state
+- Hardened SPSC ring buffer with compiler memory barriers
+- Added StateManager::AudioSnapshot + seqlock-style live snapshot copy
+- AudioEngine now consumes a coherent control snapshot once per block
+- Hardened transport step/running publication with live-state write guards
+- Added missing StateManager::get_bpm()
+- Removed duplicate bass_patterns definitions and unified to one source of truth

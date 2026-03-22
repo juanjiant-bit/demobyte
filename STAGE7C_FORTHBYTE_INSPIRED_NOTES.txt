@@ -1,0 +1,15 @@
+Stage 7C — Forthbyte-inspired adjustment
+
+Reference idea taken from forthbyte:
+- bytebeat and floatbeat can coexist as distinct but related planes,
+  rather than one replacing the other. The repo explicitly separates #byte and #float modes. citeturn620262view0
+
+Applied here:
+- Added a subtle internal float_plane_bias_ control in AudioEngine.
+- It is derived from tonal + layer_morph so patches can lean more clearly toward the float side
+  without removing the current hybrid design.
+- NoteVoice gets a slightly stronger plane bias; SnapshotVoice gets a gentler one.
+
+Intent:
+- make patch exploration between byte / hybrid / float a bit clearer
+- keep the instrument hybrid rather than replacing bytebeat with floatbeat

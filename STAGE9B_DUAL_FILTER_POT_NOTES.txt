@@ -1,0 +1,21 @@
+Stage 9B — Dual filter on one pot
+
+Implemented the filter the way requested:
+- 0..50% of the pot => LP region
+- 50..100% of the pot => HP region
+- dry/blend zone around the middle
+
+Technical behavior:
+- Added DspChain::set_dual_filter_control(float norm)
+- LP and HP now have independent wet mixes (lp_mix_ / hp_mix_)
+- Around the center:
+  * LP fades out toward dry from 45% to 55%
+  * HP fades in after 55%
+- audio_engine now drives the filter from one normalized control path:
+  cached_ctx_.tonal
+
+Result:
+- one pot acts like a dual analog-style tone control
+- center stays usable/dry
+- left side softens with LP
+- right side thins/brightens with HP

@@ -1,0 +1,22 @@
+Stage 10P — Audio-driven modulation scrub / expansion
+
+Focus:
+- stabilize the new audio-driven modulation layer before routing it wider
+- shift from raw analysis proxies toward smoothed, bounded control signals
+
+Applied:
+- clamped breath analysis outputs to a sane range
+- added smoothed mixes:
+  * breath_env_mix_
+  * breath_spike_mix_
+- replaced several raw env/spike uses with smoothed versions
+- reduced stutter influence again for readability
+- let breathing affect:
+  * drum decay / kick bias
+  * FM layer amplitude
+  * bass phrase-boundary behavior
+- kept everything conservative and block-rate
+
+Intent:
+- make the self-reactive behavior more stable and musical
+- avoid jittery modulation before the next deeper routing stage

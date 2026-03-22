@@ -1,0 +1,34 @@
+Stage 10O — Audio-driven modulation core
+
+Goal:
+- begin using the actual generated audio as a modulation source
+- keep the analysis extremely lightweight and RP2040-safe
+
+Added:
+- BreathAnalysisState in AudioEngine:
+  * env
+  * spike
+  * low_proxy
+  * high_proxy
+  * lightweight block accumulators
+- update_breath_analysis(float mono_abs)
+- finalize_breath_analysis_block()
+
+How it works:
+- recent output amplitude and edge/transient change are accumulated
+- block-rate smoothing derives:
+  * sustained energy (env / low_proxy)
+  * transient/edge activity (spike / high_proxy)
+
+Applied conservatively to:
+- note_fm_byte
+- note_decay
+- bass_gate
+- drum_decay
+- stutter_amount
+- harmonic_support
+
+Intent:
+- move toward the "macro respiratorio autogenerado" idea
+- let the instrument react to its own audio without needing heavy FFT or pitch tracking
+- keep this first pass bounded and debuggable before wider routing

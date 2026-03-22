@@ -1,0 +1,14 @@
+Optimization audit pass I
+
+Applied:
+- operators.cpp:
+  * Replaced sinf() in op_sine with fast polynomial approximation.
+  * Removed floorf() in op_tri for cheaper int cast.
+
+Why:
+- Operator layer runs at audio-rate and compounds cost.
+- These changes reduce float-heavy math in ISR.
+
+Tradeoff:
+- Slight harmonic difference in sine-based operators.
+- Still musically acceptable for this engine.

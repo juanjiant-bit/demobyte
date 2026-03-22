@@ -1,0 +1,27 @@
+Stage 10K — Macro system refinement
+
+Goal:
+- make Macro 1 / Macro 2 roles clearer before deeper transport coupling
+
+Macro semantics clarified:
+- P5 / FILTER_MACRO -> breath_amount
+  * amount of autonomous movement
+- P6 / MORPH -> harmonic_blend
+  * dry harmonic -> hybrid -> destructive
+
+What changed:
+- harmonic_blend is now interpreted through 3 internal zones:
+  * blend_dry_harmonic
+  * blend_hybrid
+  * blend_destructive
+- harmonic support is stronger in the lower region of Macro 2
+- FM/destructive influence is concentrated more in the upper region
+- stutter modulation was reduced again to keep behavior readable
+- note fold modulation was slightly tamed for clarity
+
+Result:
+- Macro 2 should now feel less ambiguous:
+  * low = cleaner / more harmonic
+  * mid = hybrid
+  * high = more destructive / FM-driven
+- Macro 1 remains the global "life amount" control

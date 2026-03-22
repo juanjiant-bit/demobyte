@@ -1,0 +1,25 @@
+YUY0 optimization audit pass D
+
+Focus:
+- MacroMotion cost reduction in Core0/ISR hot path
+- Move slow smoothing and macro-derived modulation to block-rate
+- Keep musical behavior close to previous implementation
+
+Changes:
+- audio/audio_engine.h
+  - Added block accumulators for MacroMotion
+- audio/audio_engine.cpp
+  - update_macro_motion() now only accumulates rhythm/transient/density per sample
+  - chaos/LFSR work is decimated to 1/4 rate in the hot path
+  - added finalize_macro_motion_block() called from refresh_control_block()
+  - moved EMA smoothing, macro gates, pan target, and modulation outputs to block-rate
+
+Reasoning:
+- MacroMotion was doing multiple fabsf/smoothing/gating operations every sample
+- Its outputs are intentionally slow-moving, so block-rate derivation is a better fit
+- This reduces ISR work without changing the architecture or disabling the feature
+
+Expected effect:
+- Lower Core0 hot-path cost
+- Slightly more deterministic CPU use on dense patches
+- Very small or no audible difference; any difference should be in micro-motion smoothness only

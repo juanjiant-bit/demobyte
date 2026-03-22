@@ -1,0 +1,17 @@
+Stage 10V Transport Audit 2
+
+What this pass did:
+- audio_engine.cpp: occurrences of 'update_breath_analysis(' = 2
+- audio_engine.cpp: occurrences of 'finalize_breath_analysis_block();' = 1
+- audio_engine.cpp: occurrences of 'update_audio_decision_state();' = 1
+- audio_engine.cpp: occurrences of 'update_dominant_decision();' = 1
+- audio_engine.cpp: occurrences of 'update_bass_movement();' = 1
+- audio_engine.cpp: occurrences of 'harmonic_blend_' = 9
+- audio_engine.cpp: occurrences of 'set_transport_running(' = 0
+- audio_engine.cpp: occurrences of 'set_current_step_index(' = 0
+
+Intent:
+- respect the previously identified bug list
+- remove duplicate declarations/calls introduced by iterative patching
+- reduce transport glue fragility across sequencer/state/audio
+- leave the branch in a cleaner state for proto testing

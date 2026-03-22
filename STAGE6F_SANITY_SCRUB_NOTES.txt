@@ -1,0 +1,11 @@
+Stage 6F — Sanity scrub
+
+Main sanity fixes:
+- Reconciled op_pm signature between operators.h and operators.cpp.
+- Removed potential duplicate t_f wrap insertion in floatbeat_seed.h.
+- Added non-negative clamps to morph and dry layer weights in note/snapshot voice routing.
+  This reduces the chance of pathological negative weights during extreme macro/dry combinations.
+
+Why this pass:
+- At this stage the biggest risks are not missing features but accumulated integration edge cases.
+- These fixes aim to reduce weirdness in extreme settings and keep the final tree more coherent.

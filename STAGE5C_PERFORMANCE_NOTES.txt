@@ -1,0 +1,17 @@
+
+Stage 5C — Performance Macro Layer
+
+- Added perf_macro_ (smoothed macro)
+- Influences:
+  * morph intensity
+  * floatbeat presence
+  * sub energy
+- Gives immediate performative response from a single control
+
+Result:
+- pushing macro increases depth, movement, and space
+- pulling macro tightens and digitalizes sound
+
+Next:
+- map to pressure / encoder
+- refine curves per algorithm

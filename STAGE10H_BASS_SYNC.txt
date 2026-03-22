@@ -1,0 +1,18 @@
+
+Stage 10H — Bass synced to internal timing
+
+Improvements:
+- removed raw counter-based randomness
+- introduced simple clocked bass_step_clock_
+- bass steps now occur at fixed intervals (stable groove)
+- pattern switching happens slower (less jitter)
+
+Result:
+- bass feels rhythmically consistent
+- closer to sequencer behavior
+- still lightweight and ISR-safe
+
+Next:
+- full integration with sequencer clock (BPM)
+- groove/swing support
+- user control over pattern density

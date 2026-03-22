@@ -1,0 +1,12 @@
+Stage 6H — Structure / consistency review
+
+Fixed:
+- DspChain refresh_active_mask() now actually includes FX_STUTTER, matching process() and the enum.
+- SnapshotVoice final route was still using the stale direct 4-layer blend; now it matches the intended morph + dry path.
+- SnapshotVoice float_mix is mutable before clamping.
+- Removed dead local operator_amount variable/assignments in note/snapshot voice blocks.
+
+Remaining structural notes:
+- floatbeat_basic() exists but is currently unused; kept intentionally as a simple reference/seed helper.
+- The repository root still contains many stage note text files; they are harmless but are documentation clutter, not runtime code.
+- Full compile verification against Pico SDK is still the one thing this static scrub cannot prove.

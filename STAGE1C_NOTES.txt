@@ -1,0 +1,17 @@
+YUY0 Stage 1C real integration
+
+Changes:
+- Added voice comb resonator state to AudioEngine
+- Added per-note pitch transient envelope for operator layer
+- Added slow snapshot drift/motion
+- Tightened sub range and smoothing
+- Added global_time_ state for slow modulation
+
+Files touched:
+- audio/audio_engine.h
+- audio/audio_engine.cpp
+
+Validation notes:
+- Changes were integrated against the real Stage 1B project tree
+- Static compile validation inside this container is limited by missing Pico SDK headers
+- Logic was kept local to the voice path to minimize regression risk

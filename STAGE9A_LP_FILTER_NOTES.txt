@@ -1,0 +1,20 @@
+Stage 9A — LP Filter
+
+Added:
+- dsp/lp_filter.h: simple one-pole stereo low-pass filter
+- DspChain support:
+  * FX_LP bit
+  * lp_.init/reset/process
+  * set_lp_cutoff(...)
+  * active-mask integration
+
+Routing:
+- LP sits after HP in the DSP chain.
+- audio_engine drives LP cutoff from float_plane_bias_ and macro_motion_.density_s:
+  * more float / more density => lower cutoff
+  * cleaner / calmer states => brighter output
+
+Intent:
+- soften harsh top-end
+- make complex/floating patches more synth-like
+- provide a low-risk, audible improvement before hardware testing

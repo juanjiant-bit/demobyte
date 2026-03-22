@@ -1,0 +1,18 @@
+
+Stage 10J — Cleanup / stability pass
+
+Focus:
+- consolidate 10A–10I before going deeper
+- catch small structural issues and keep behavior conservative
+
+Applied:
+- BPM-derived bass clock increment is now clamped to a safe range
+- bass_note_offset_ is clamped to a practical 0..24 semitone window
+- removed any accidental duplicate bass movement call
+- slightly reduced sub animation intensity to keep low-end readable
+- slightly reduced harmonic support layer to avoid overstacking
+- clarified the lightweight bass quantizer helper with an inline comment
+
+Intent:
+- keep the new macro/bass system buildable and musically stable
+- make the next transport-coupled stage safer

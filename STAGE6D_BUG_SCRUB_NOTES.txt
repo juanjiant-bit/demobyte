@@ -1,0 +1,11 @@
+Stage 6D — Bug scrub / consistency pass
+
+Fixed:
+- FloatbeatState time accumulator now wraps periodically to reduce long-run float precision drift.
+- SnapshotVoice rechecked and patched so morph + dry routing is present in the final tree.
+- Added positivity clamps for float_mix / fb_mix before solving op_mix in both voice paths.
+- Re-harmonized sub_mix with the newer decoupled control model.
+
+Why:
+- These are small but meaningful consistency/robustness fixes.
+- They reduce the chance of late-session weirdness, negative weights, or drift between intended and actual behavior.

@@ -1,0 +1,14 @@
+Stage 6N — Debug closeout merge
+
+Applied only the two useful pieces from the last Claude iteration:
+1) README.md refreshed from Claude's updated documentation.
+2) SnapshotVoice coefficients softened slightly, without replacing the full tree:
+   - morph scale: 0.78 -> 0.70
+   - metallic dry curve: 0.90 -> 0.75
+   - snapshot floatbeat dry boost reduced
+   - snapshot floatbeat morph emphasis reduced slightly
+
+Intent:
+- close the debug phase with a cleaner doc baseline
+- make SnapshotVoice a bit more stable/gentle in performance
+- avoid reintroducing structural bugs by copying whole files

@@ -1,0 +1,21 @@
+Stage 6J — Final consistency review
+
+Review focus:
+- structure coherence
+- stale/duplicated helper code
+- header/cpp signature consistency
+- stale direct mix paths vs intended morph/dry routes
+- active-mask consistency in DSP
+- dead local remnants from previous routing stages
+
+Actions taken:
+- normalized floatbeat_seed.h to use float_ops.h and removed duplicate helper drift
+- verified / enforced op_pm signature consistency
+- ensured FX_STUTTER is present in enum + refresh_active_mask and removed nonsensical reset residue
+- removed operator_amount dead remnants in audio_engine.cpp
+- ensured snapshot uses the intended morph + dry path
+- kept control macros clamped after smoothing
+
+Remaining honest note:
+- This is still a static consistency pass. It greatly reduces structural drift,
+  but it does not replace a full compile + hardware listening pass.

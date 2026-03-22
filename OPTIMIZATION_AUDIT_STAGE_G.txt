@@ -1,0 +1,15 @@
+Optimization audit pass G
+
+Applied:
+- DelayLine:
+  * Added cached active_ flag updated in set_wet().
+  * is_active() now returns the cached flag instead of comparing wet every sample.
+  * clear() resets active_ explicitly.
+- Reverb:
+  * Removed two redundant dry-path multiplies in process().
+  * dry_q15_ is fixed at 32767 in this design, so the dry signal can pass through directly.
+
+Why these changes:
+- They are low-risk hot-path optimizations aligned with the current architecture.
+- They preserve the existing sound while shaving a bit more work from Core0/ISR.
+- They continue the strategy of caching bypass state in DSP-heavy modules.

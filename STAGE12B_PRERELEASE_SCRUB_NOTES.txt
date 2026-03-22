@@ -1,0 +1,8 @@
+Stage 12B — pre-release scrub
+
+Applied after the Stage 12 stability pass:
+- main.cpp: fixed Core1 loop pacing block so elapsed is measured from the current iteration start
+- audio/audio_engine.cpp: bass fallback stepping now uses the block snapshot BPM instead of a live cross-core read
+- utils/ring_buffer.h: tightened SPSC index publication/observation with extra compiler barriers and local index snapshots
+
+This is still a source-level scrub; final validation should be done in the Pico toolchain/hardware environment.

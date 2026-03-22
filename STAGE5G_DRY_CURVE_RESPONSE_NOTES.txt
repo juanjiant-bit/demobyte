@@ -1,0 +1,13 @@
+Stage 5G — Dry curve response
+
+Applied:
+- Replaced linear-ish dry_amt behavior with per-algorithm nonlinear curves.
+- Added a softer dry_target knee from perf_macro_ so the transition into dry floatbeat
+  starts earlier but feels more gradual and playable.
+- NoteVoice and SnapshotVoice each get their own curve family.
+
+Result:
+- deep/sub reach floatbeat dominance in a more musical way
+- metallic stays hybrid longer, then tips later
+- noisy stays ambiguous and textured
+- upper macro range should feel less like a switch and more like a controlled reveal

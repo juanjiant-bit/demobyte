@@ -1,0 +1,33 @@
+Stage 10V Transport Fix
+
+Fixed the main remaining structural issue:
+real sequencer transport/step state is now explicitly published into StateManager.
+
+Applied:
+- StateManager:
+  * added set_transport_running(bool)
+  * added set_current_step_index(uint8_t)
+
+- Sequencer:
+  * added StateManager* pointer + set_state_manager(...)
+  * mirrors transport state on:
+    - play()
+    - rearm()
+    - stop()
+    - preroll transition to RECORDING
+  * mirrors current step on:
+    - pre-emitted step
+    - step boundary
+    - step advance
+
+- main.cpp:
+  * wires g_seq -> g_state_mgr
+
+- AudioEngine:
+  * bass transport coupling now requires a valid step index
+  * resets fallback accumulator when transport-driven step arrives
+  * clears last-step latch when transport data is invalid
+
+Result:
+- transport coupling is no longer "ghost state"
+- bass engine has a real sequencer -> state -> audio path

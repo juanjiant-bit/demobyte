@@ -1,0 +1,20 @@
+Stage 5B — Macro desacoplado y musical
+
+Cambios:
+- Se desacoplaron tres controles internos:
+  * low_depth_ctrl_
+  * float_body_ctrl_
+  * morph_ctrl_
+- Cada uno se deriva de combinaciones distintas de:
+  * macro global
+  * tonal
+  * densidad de MacroMotion
+- low_depth_macro_, float_body_macro_ y layer_morph_macro_ ahora siguen esos controles
+  con smoothing independiente.
+- floatbeat_mix_macro_ ahora depende más de morph + float_body y menos de un único macro.
+- El sub mix y el morph final reaccionan con un poco más de musicalidad al cuerpo float.
+
+Intención:
+- que el instrumento no sienta que "todo cambia con un solo knob"
+- dar más separación entre profundidad, cuerpo y transición entre capas
+- volver el comportamiento más tocable sin cambiar UI todavía

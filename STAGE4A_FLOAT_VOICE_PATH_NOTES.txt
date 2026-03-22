@@ -1,0 +1,22 @@
+Stage 4A — First real float voice path
+
+Applied:
+- Added audio/float_ops.h with float-oriented helpers:
+  * f_wrap01
+  * f_sine
+  * f_tri
+  * f_softclip
+- Added per-voice float phases to NoteVoice and SnapshotVoice.
+- Added a dedicated float voice layer to note_voice and snapshot_voice:
+  * note_voice now mixes bytebeat + operator + float_voice
+  * snapshot_voice now mixes bytebeat + operator + float_voice (lighter)
+- The float layer emphasizes subharmonic body so low-end can come from the voice itself,
+  not only from the global sub bus.
+- Fixed a latent compile/runtime inconsistency in operators.cpp:
+  * op_pm signature now matches operators.h and audio_engine usage
+  * fast op_sine approximation now uses fabsf consistently
+
+Intent:
+- Move the engine closer to a real hybrid bytebeat + float synthesis path.
+- Increase low-end depth from the synthesis itself, not only from support buses.
+- Keep compatibility with the current architecture without rewriting BytebeatGraph yet.

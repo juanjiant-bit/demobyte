@@ -1,0 +1,17 @@
+
+Stage 10I — Bass sequence sync
+
+What changed:
+- Replaced the previous free-running/internal bass clock with a sequencer-like musical clock derived from BPM.
+- Added persistent bass engine state to AudioEngine:
+  * bass_seq_step_
+  * bass_pattern_id_
+  * bass_seq_accum_
+- Pattern changes now happen more slowly and predictably.
+- Bass octave jumps remain available, but are tied to stronger breath + rhythm conditions.
+- Bass transposition now handles octave offsets above 12 semitones safely.
+
+Important:
+- This is not yet transport-locked to sequencer start/stop events.
+- It is, however, musically synced to the current BPM and much closer to the sequencer feel.
+- This pass is intended as a safer and more coherent timing foundation before full transport coupling.

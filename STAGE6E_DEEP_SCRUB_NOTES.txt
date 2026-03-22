@@ -1,0 +1,12 @@
+Stage 6E — Deep scrub / integration bug pass
+
+Main findings fixed:
+- DspChain had process() using FX_STUTTER, but the enum/active mask did not define or populate it.
+  This could break compilation or silently desync behavior.
+- SnapshotVoice still had a stale direct 4-layer mix path in the final tree.
+  Replaced with the intended morph + dry floatbeat routing.
+- SnapshotVoice float_mix was declared const while later clamped, which is a compile-time error.
+  It now matches the intended mutable path.
+- FloatbeatState::t_f now wraps periodically in both floatbeat functions to reduce precision drift over long sessions.
+
+This pass is specifically about consistency and bug risk reduction, not new features.

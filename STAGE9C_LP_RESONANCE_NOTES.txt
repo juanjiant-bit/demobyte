@@ -1,0 +1,13 @@
+Stage 9C — LP resonance
+
+Applied:
+- Replaced the simple one-pole LP with a resonant biquad-style low-pass filter.
+- Resonance is fixed and gentle (Q ~ 0.62), by design:
+  * enough to add edge and synth-like character
+  * not enough to self-oscillate or destabilize the first hardware test
+- Kept the dual-filter one-pot mapping from Stage 9B unchanged.
+
+Result:
+- left side of the dual filter should now feel more alive and musical
+- center dry zone remains the same
+- right side HP behavior remains the same
