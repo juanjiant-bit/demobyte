@@ -8,6 +8,7 @@ public:
                   uint32_t duration_samples);
     int16_t evaluate(const EvalContext& ctx);
     int16_t preview_evaluate(const EvalContext& ctx) const;
+    void    stop() { active_ = false; position_ = 0; duration_ = 0; }
     bool    is_active() const { return active_; }
 
 private:

@@ -330,7 +330,7 @@ private:
     void     do_trigger(uint8_t slot);
     void     do_save   (uint8_t slot, const float pots[7]);
     void     sync_live_from_snapshot(const Snapshot& s, bool rebuild_graph);
-    void     apply_snapshot_engine_to_graph(BytebeatGraph& graph, const Snapshot& s);
+    static void apply_snapshot_engine_to_graph(BytebeatGraph& graph, const Snapshot& s);
     uint32_t generate_seed(uint8_t slot);
     uint32_t rng_next();
     float    rand01();

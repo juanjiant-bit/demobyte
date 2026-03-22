@@ -80,10 +80,10 @@ struct PackedSnapshot {
     uint8_t  filter_macro;
     uint8_t  resonance;
     uint8_t  env_macro;
-    uint8_t  _pad4[1];        // alineación → sizeof = 92
+    uint8_t  _pad4[1];        // reservado final; packed => sizeof = 88
 } __attribute__((packed));
 
-static_assert(sizeof(PackedSnapshot) == 92, "PackedSnapshot V6 size mismatch");
+static_assert(sizeof(PackedSnapshot) == 88, "PackedSnapshot V6 size mismatch");
 
 struct FlashBlock {
     uint32_t       magic;
@@ -92,7 +92,7 @@ struct FlashBlock {
     uint8_t        num_snapshots;
     uint8_t        _pad;
     PackedSnapshot snapshots[8];
-} __attribute__((packed));  // 8 × 92 = 736 bytes de snapshots
+} __attribute__((packed));  // 8 × 88 = 704 bytes de snapshots
 
 // ── CRC32 IEEE 802.3 (sin tabla, sin dependencias) ────────────
 inline uint32_t crc32_compute(const uint8_t* data, uint32_t len) {

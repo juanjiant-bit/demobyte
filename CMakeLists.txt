@@ -94,6 +94,7 @@ pico_enable_stdio_uart(bytebeat_machine 0)
 
 pico_add_extra_outputs(bytebeat_machine)
 
+
 option(BYT3_MINIMAL_HW "Build the 4-pad + 1-pot prototype firmware" OFF)
 
 if(BYT3_MINIMAL_HW)

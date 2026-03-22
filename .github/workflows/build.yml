@@ -1,0 +1,44 @@
+name: Build Pico UF2
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential
+
+      - name: Clone pico-sdk
+        run: |
+          git clone https://github.com/raspberrypi/pico-sdk.git --depth=1
+          cd pico-sdk
+          git submodule update --init
+
+      - name: Set SDK path
+        run: echo "PICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk" >> $GITHUB_ENV
+
+      - name: Configure
+        run: |
+          mkdir build
+          cd build
+          cmake .. -DPICO_BOARD=pico -DBYT3_MINIMAL_HW=ON
+
+      - name: Build
+        run: |
+          cd build
+          make -j4
+
+      - name: Upload UF2
+        uses: actions/upload-artifact@v4
+        with:
+          name: uf2
+          path: build/*.uf2
