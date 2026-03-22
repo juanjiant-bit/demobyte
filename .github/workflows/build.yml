@@ -43,4 +43,3 @@ steps:
     with:
       name: pico-uf2
       path: build/*.uf2
-```
