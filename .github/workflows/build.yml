@@ -42,6 +42,3 @@ jobs:
         with:
           name: uf2
           path: build/*.uf2
-:::
-
----
