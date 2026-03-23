@@ -91,17 +91,24 @@ pico_add_extra_outputs(bytebeat_machine)
 option(BYT3_MINIMAL_HW "Build the 4-pad + 1-pot prototype firmware" OFF)
 
 if(BYT3_MINIMAL_HW)
+
     add_executable(bytebeat_machine_minimal
         main_minimal.cpp
         io/minimal_touch_pads.cpp
+
         audio/audio_engine.cpp
         audio/operators.cpp
         audio/audio_output_pwm.cpp
         audio/audio_output_i2s.cpp
         audio/drums/drum_engine.cpp
+
         synth/bytebeat_graph.cpp
         synth/glide.cpp
         synth/quantizer.cpp
+
+        state/state_manager.cpp
+        state/flash_store.cpp
+
         dsp/dsp_chain.cpp
         dsp/stutter_fx.cpp
         dsp/reverb.cpp
@@ -144,4 +151,5 @@ if(BYT3_MINIMAL_HW)
     pico_enable_stdio_usb(bytebeat_machine_minimal 1)
     pico_enable_stdio_uart(bytebeat_machine_minimal 0)
     pico_add_extra_outputs(bytebeat_machine_minimal)
+
 endif()
