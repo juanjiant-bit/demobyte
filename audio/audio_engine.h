@@ -30,6 +30,7 @@ public:
     void set_event_queue(RingBuffer<SequencerEvent, 128>* q);
     void set_output_mode(OutputMode mode) { output_mode_ = mode; }
     OutputMode output_mode() const { return output_mode_; }
+    void update_breath_analysis(float mono_abs);
 
 private:
     static bool timer_callback(repeating_timer_t* rt);
@@ -42,7 +43,6 @@ private:
     void        finalize_macro_motion_block();
     void        update_modulation_bus();
     void        update_bass_movement();
-    void        update_breath_analysis(float mono_abs);
     void        finalize_breath_analysis_block();
     void        update_audio_decision_state();
     void        update_dominant_decision();

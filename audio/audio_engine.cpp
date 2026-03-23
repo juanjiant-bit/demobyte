@@ -148,7 +148,7 @@ static inline float voice_shaper(float x, float drive, float tone) {
     return low + high;
 }
 
-static inline float process_voice_comb(AudioEngine* engine, float x, float* buf, uint16_t& idx, float& lp) {
+static inline float process_voice_comb(float x, float* buf, uint16_t& idx, float& lp) {
     const float delayed = buf[idx];
     lp += 0.18f * (delayed - lp);
     float out = x + lp * 0.42f;
@@ -157,7 +157,7 @@ static inline float process_voice_comb(AudioEngine* engine, float x, float* buf,
     idx = (uint16_t)((idx + 1u) & 255u);
     // keep the comb musical and bounded
     out = out / (1.0f + 0.25f * fabsf(out));
-    if (engine) engine->update_breath_analysis(fabsf(out));
+    update_breath_analysis(fabsf(out));
     return out;
 }
 
@@ -1185,6 +1185,7 @@ void AudioEngine::process_one_sample() {
                 synth = op_fold(synth, 0.52f + macro * 0.20f);
                 synth = voice_shaper(synth, 0.54f, 0.42f + macro * 0.18f);
                 algo_trim = 0.82f;
+                algo_low_weight = 0.10f;
                 algo_low_weight = 0.12f;
                 break;
             }
@@ -1197,6 +1198,7 @@ void AudioEngine::process_one_sample() {
                 synth = op_fold(synth, 0.16f + macro * 0.10f);
                 synth = voice_shaper(synth, 0.58f, 0.12f + macro * 0.10f);
                 algo_trim = 0.88f;
+                algo_low_weight = 0.56f;
                 algo_low_weight = 0.78f;
                 break;
             }
@@ -1243,8 +1245,6 @@ void AudioEngine::process_one_sample() {
             f_sine(note_voice_.float_phase2) * (0.18f + 0.16f * float_body_macro_)
         ) * note_env;
 
-        float bb = (float)raw_nv / 32768.0f;
-
         const float fm_voice = op_sine(wrap_phase01(
             note_voice_.op_phase +
             bb * mod_bus_.note_fm_byte * 0.07f +
@@ -1285,6 +1285,8 @@ void AudioEngine::process_one_sample() {
                 algo_out_trim = 0.94f;
                 break;
         }
+
+        float bb = (float)raw_nv / 32768.0f;
 
         float float_mix = 0.08f + 0.24f * float_body_macro_ + algo_float_bias;
         float fb_mix    = 0.02f + 0.26f * floatbeat_mix_macro_ + algo_fb_bias;
@@ -1585,7 +1587,7 @@ void AudioEngine::process_one_sample() {
             // si se tomaba el branch note_mode_active.
             uint8_t pitch_raw = (uint8_t)(((uint32_t)(synth_l + 32768) >> 9) & 0x7F);
             ScaleId sid = (ScaleId)ctx.scale_id;
-            uint8_t pitch_q = Quantizer::quantize(pitch_raw, sid, ctx.root);
+            uint8_t pitch_q = Quantizer::quantize(pitch_raw, static_cast<uint8_t>(sid), ctx.root);
             if (pitch_q != last_lead_note_) {
                 lead_osc_.set_freq_slew(Quantizer::note_to_freq(pitch_q));
                 last_lead_note_ = pitch_q;
@@ -1656,7 +1658,7 @@ void AudioEngine::process_one_sample() {
     float scene_r = (float)synth_mix_r / 32768.0f;
 
     float voice_m = ((float)note_voice_s + (float)snapshot_voice_s) / 32768.0f;
-    voice_m = process_voice_comb(this, voice_m, voice_comb_buf_, voice_comb_idx_, voice_comb_lp_);
+    voice_m = process_voice_comb(voice_m, voice_comb_buf_, voice_comb_idx_, voice_comb_lp_);
 
     // Stage 3C: subgrave controlado por macro + cuerpo float en voices.
     const float target_sub = note_voice_.active

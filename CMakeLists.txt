@@ -38,6 +38,8 @@ add_executable(bytebeat_machine
     io/cap_pad_handler.cpp
     io/encoder.cpp
     io/input_router.cpp
+    state/state_manager.cpp
+    state/flash_store.cpp
     dsp/dsp_chain.cpp
     dsp/stutter_fx.cpp
     dsp/reverb.cpp
@@ -107,6 +109,8 @@ if(BYT3_MINIMAL_HW)
         synth/bytebeat_graph.cpp
         synth/glide.cpp
         synth/quantizer.cpp
+        state/state_manager.cpp
+        state/flash_store.cpp
         dsp/dsp_chain.cpp
         dsp/stutter_fx.cpp
         dsp/reverb.cpp
