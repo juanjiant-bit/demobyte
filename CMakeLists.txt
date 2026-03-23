@@ -11,6 +11,7 @@ endif()
 include(${PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 
 project(bytebeat_machine VERSION 1.21 LANGUAGES C CXX ASM)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -52,6 +53,7 @@ add_executable(bytebeat_machine
 pico_generate_pio_header(bytebeat_machine
     ${CMAKE_CURRENT_SOURCE_DIR}/led/ws2812.pio
 )
+
 pico_generate_pio_header(bytebeat_machine
     ${CMAKE_CURRENT_SOURCE_DIR}/audio/pcm5102_i2s.pio
 )
@@ -82,22 +84,14 @@ target_compile_options(bytebeat_machine PRIVATE
     -ffast-math
 )
 
-# target_compile_definitions(bytebeat_machine PRIVATE
-#     DEBUG_AUDIO
-#     DEBUG_PADS
-#     DEBUG_CLOCK
-#     DEBUG_MIDI
-# )
-
 pico_enable_stdio_usb(bytebeat_machine 1)
 pico_enable_stdio_uart(bytebeat_machine 0)
-
 pico_add_extra_outputs(bytebeat_machine)
-
 
 option(BYT3_MINIMAL_HW "Build the 4-pad + 1-pot prototype firmware" OFF)
 
 if(BYT3_MINIMAL_HW)
+
     add_executable(bytebeat_machine_minimal
         main_minimal.cpp
         io/minimal_touch_pads.cpp
@@ -109,8 +103,6 @@ if(BYT3_MINIMAL_HW)
         synth/bytebeat_graph.cpp
         synth/glide.cpp
         synth/quantizer.cpp
-        state/state_manager.cpp
-        state/flash_store.cpp
         dsp/dsp_chain.cpp
         dsp/stutter_fx.cpp
         dsp/reverb.cpp
@@ -118,6 +110,10 @@ if(BYT3_MINIMAL_HW)
 
     pico_generate_pio_header(bytebeat_machine_minimal
         ${CMAKE_CURRENT_SOURCE_DIR}/audio/pcm5102_i2s.pio
+    )
+
+    pico_generate_pio_header(bytebeat_machine_minimal
+        ${CMAKE_CURRENT_SOURCE_DIR}/led/ws2812.pio
     )
 
     target_include_directories(bytebeat_machine_minimal PRIVATE
@@ -149,4 +145,5 @@ if(BYT3_MINIMAL_HW)
     pico_enable_stdio_usb(bytebeat_machine_minimal 1)
     pico_enable_stdio_uart(bytebeat_machine_minimal 0)
     pico_add_extra_outputs(bytebeat_machine_minimal)
+
 endif()
