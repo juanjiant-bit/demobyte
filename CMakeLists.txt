@@ -104,7 +104,7 @@ option(BYT3_MINIMAL_HW "Build the 4-pad + 1-pot prototype firmware" OFF)
 
 if(BYT3_MINIMAL_HW)
 
-```
+
 add_executable(bytebeat_machine_minimal
     main_minimal.cpp
     io/minimal_touch_pads.cpp
@@ -158,6 +158,6 @@ target_compile_options(bytebeat_machine_minimal PRIVATE
 pico_enable_stdio_usb(bytebeat_machine_minimal 1)
 pico_enable_stdio_uart(bytebeat_machine_minimal 0)
 pico_add_extra_outputs(bytebeat_machine_minimal)
-```
+
 
 endif()
