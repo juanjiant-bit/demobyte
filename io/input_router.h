@@ -93,6 +93,7 @@ public:
     void process(CapPadHandler& pads, AdcHandler& adc,
                  Sequencer& seq, StateManager& state,
                  RingBuffer<SequencerEvent, 128>& queue);
+    bool is_shift_rec_active() const { return shift_rec_mode_; }
 
 private:
     PadUiContext resolve_pad_context(bool shift, bool shift_rec) const;
