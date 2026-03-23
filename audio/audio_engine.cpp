@@ -1584,8 +1584,8 @@ void AudioEngine::process_one_sample() {
             // Antes declarada fuera del else → warning de variable usada sin inicializar
             // si se tomaba el branch note_mode_active.
             uint8_t pitch_raw = (uint8_t)(((uint32_t)(synth_l + 32768) >> 9) & 0x7F);
-            ScaleId sid = (ScaleId)ctx.scale_id;
-            uint8_t pitch_q = Quantizer::quantize(pitch_raw, sid, ctx.root);
+           uint8_t scale_id = (uint8_t)ctx.scale_id;
+           uint8_t pitch_q = Quantizer::quantize(pitch_raw, scale_id, ctx.root);
             if (pitch_q != last_lead_note_) {
                 lead_osc_.set_freq_slew(Quantizer::note_to_freq(pitch_q));
                 last_lead_note_ = pitch_q;
