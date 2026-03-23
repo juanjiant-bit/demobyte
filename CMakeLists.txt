@@ -109,8 +109,6 @@ if(BYT3_MINIMAL_HW)
         synth/bytebeat_graph.cpp
         synth/glide.cpp
         synth/quantizer.cpp
-        state/state_manager.cpp
-        state/flash_store.cpp
         dsp/dsp_chain.cpp
         dsp/stutter_fx.cpp
         dsp/reverb.cpp
@@ -118,6 +116,10 @@ if(BYT3_MINIMAL_HW)
 
     pico_generate_pio_header(bytebeat_machine_minimal
         ${CMAKE_CURRENT_SOURCE_DIR}/audio/pcm5102_i2s.pio
+    )
+
+    pico_generate_pio_header(bytebeat_machine_minimal
+        ${CMAKE_CURRENT_SOURCE_DIR}/led/ws2812.pio
     )
 
     target_include_directories(bytebeat_machine_minimal PRIVATE
@@ -148,5 +150,7 @@ if(BYT3_MINIMAL_HW)
 
     pico_enable_stdio_usb(bytebeat_machine_minimal 1)
     pico_enable_stdio_uart(bytebeat_machine_minimal 0)
+    pico_add_extra_outputs(bytebeat_machine_minimal)
+endif()_machine_minimal 0)
     pico_add_extra_outputs(bytebeat_machine_minimal)
 endif()
