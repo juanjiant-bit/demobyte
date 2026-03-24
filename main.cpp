@@ -1,18 +1,14 @@
-// main.cpp — BYT3 V3.5
+// main.cpp — BYT3 V3.6
 //
-// Circuito confirmado:
-//   GP5 = ROW drive + 100nF GND
-//   1MΩ en serie en cada COL (lado sense)
-//   GP8/9/13/14 = COL sense
+// PAD 0 (GP8)  → nueva fórmula bytebeat (sin click: crossfade suave)
+// PAD 1 (GP9)  → kick drum
+// PAD 2 (GP13) → snare
+// PAD 3 (GP14) → hat
+// POT  (GP26)  → macro/tonal (timbre)
 //
-// Con dedo: más capacitancia → más tiempo de carga → raw MAYOR que baseline
-// PERO el tono bajaba al tocar en el diagnóstico, lo que significa:
-//   sin dedo: cap no se descarga bien → raw alto (casi timeout)
-//   con dedo: cap más grande → descarga más lenta pero también carga más lenta
-//   El efecto neto depende del discharge_us
-//
-// SOLUCIÓN: discharge largo (50ms) para garantizar descarga completa.
-// Con descarga completa, más C siempre = más tiempo de carga = delta positivo.
+// Discharge 50ms para pads grandes de cobre grabado.
+// Sin regeneración automática — solo al tocar pad 0.
+// Bytebeat a volumen completo, drums con duck automático.
 
 #include <cstdint>
 #include <cstdio>
@@ -43,14 +39,11 @@ static inline void i2s_write(int16_t l, int16_t r) {
 }
 
 // ── Shared state ──────────────────────────────────────────────────
-volatile float   g_pot          = 0.5f;
-volatile bool    g_randomize    = false;
-volatile uint8_t g_zone         = 1;
-volatile bool    g_zone_changed = false;
-volatile uint8_t g_drum_trig    = 0;
-volatile int32_t g_duck         = 256;
-volatile bool    g_ready        = false;
+volatile float   g_pot        = 0.5f;
+volatile uint8_t g_pad_event  = 0;    // bits: 0=new_bb, 1=kick, 2=snare, 3=hat
+volatile bool    g_ready      = false;
 
+// ── RNG ───────────────────────────────────────────────────────────
 static uint32_t g_rng = 0xDEADBEEFu;
 static inline uint32_t rng_next() {
     g_rng ^= g_rng << 13; g_rng ^= g_rng >> 17; g_rng ^= g_rng << 5;
@@ -58,20 +51,12 @@ static inline uint32_t rng_next() {
 }
 
 // ── Pad sensing ───────────────────────────────────────────────────
-// discharge 50ms: garantiza descarga completa incluso con pads grandes
-// Con dedo: raw SUBE (más C = más tiempo)
-// Sin dedo: raw es el baseline bajo
-//
-// El escaneo tarda: 4 pads × (50ms discharge + ~tiempo_carga) ≈ 200-250ms/ciclo
-// Esto es lento pero confiable. Para el hardware final con pads más chicos
-// el discharge bajará a 1-5ms y el ciclo será mucho más rápido.
+constexpr uint32_t DISCHARGE_US = 50000;
+constexpr uint32_t MAX_US       = 200000;
 
-constexpr uint32_t DISCHARGE_US = 50000;  // 50ms — descarga completa garantizada
-constexpr uint32_t MAX_US       = 200000; // 200ms timeout
-
-static float    pad_base[4] = {};
-static bool     pad_on[4]   = {};
-static bool     pad_prev[4] = {};
+static float pad_base[4] = {};
+static bool  pad_on[4]   = {};
+static bool  pad_prev[4] = {};
 
 static uint32_t measure_pad(uint8_t c) {
     gpio_put(PIN_ROW, 0);
@@ -105,42 +90,83 @@ static void scan_pads() {
         pad_prev[c] = pad_on[c];
         const uint32_t raw = measure_pad(c);
         const float delta  = (float)raw - pad_base[c];
-
-        // threshold = 15% del baseline
         const float hyst_on  = pad_base[c] * 0.15f;
         const float hyst_off = pad_base[c] * 0.08f;
-
         pad_on[c] = pad_on[c] ? (delta >= hyst_off) : (delta >= hyst_on);
-
-        // Actualizar baseline solo cuando no hay toque (drift compensation)
         if (!pad_on[c])
             pad_base[c] += 0.01f * ((float)raw - pad_base[c]);
     }
 }
 
-static inline bool just_pressed(uint8_t n)  { return  pad_on[n] && !pad_prev[n]; }
-static inline bool just_released(uint8_t n) { return !pad_on[n] &&  pad_prev[n]; }
+static inline bool just_pressed(uint8_t n) { return pad_on[n] && !pad_prev[n]; }
+
+// ── Core1 ─────────────────────────────────────────────────────────
+void core1_entry() {
+    gpio_init(PIN_LED); gpio_set_dir(PIN_LED, GPIO_OUT);
+    gpio_init(PIN_ROW); gpio_set_dir(PIN_ROW, GPIO_OUT);
+    gpio_put(PIN_ROW, 0);
+    for (uint8_t c = 0; c < 4; ++c) {
+        gpio_init(PIN_COL[c]); gpio_set_dir(PIN_COL[c], GPIO_IN);
+        gpio_disable_pulls(PIN_COL[c]);
+    }
+    adc_init(); adc_gpio_init(PIN_POT); adc_select_input(0);
+
+    gpio_put(PIN_LED, 1);
+    calibrate_pads();
+    gpio_put(PIN_LED, 0);
+    g_ready = true;
+
+    float pot_s = float(adc_read()) / 4095.0f;
+
+    while (true) {
+        pot_s += 0.12f * (float(adc_read()) / 4095.0f - pot_s);
+        g_pot = pot_s;
+
+        scan_pads();
+
+        // Solo reportar just_pressed — sin triggers fantasma por nivel
+        if (just_pressed(0)) { g_pad_event |= 1u; gpio_put(PIN_LED, 1); }
+        if (just_pressed(1))   g_pad_event |= 2u;
+        if (just_pressed(2))   g_pad_event |= 4u;
+        if (just_pressed(3))   g_pad_event |= 8u;
+
+        // LED off cuando pad 0 se suelta
+        if (!pad_on[0]) gpio_put(PIN_LED, 0);
+    }
+}
 
 // ── Drums ────────────────────────────────────────────────────────
-static uint32_t kick_ph = 0,  kick_env  = 0;
-static uint32_t s_rng   = 0xABCDu, snare_env = 0;
-static uint32_t hat_env = 0;
+static uint32_t kick_ph  = 0,  kick_env  = 0;
+static uint32_t s_rng    = 0xABCDu, snare_env = 0;
+static uint32_t hat_env  = 0;
+static int32_t  duck_env = 256;  // Q8, 256=sin duck
 
-static void trig_kick()  { kick_env  = 0xFFFFu; kick_ph = 0; g_duck = 64; }
-static void trig_snare() { snare_env = 0xFFFFu; s_rng = rng_next(); g_duck = 96; }
-static void trig_hat()   { hat_env   = 0x6000u; if (g_duck > 160) g_duck = 160; }
+static void trig_kick()  {
+    kick_env = 0xFFFFu; kick_ph = 0;
+    duck_env = 48;  // -14dB duck al kick
+}
+static void trig_snare() {
+    snare_env = 0xFFFFu; s_rng = rng_next();
+    duck_env = 80;  // -10dB
+}
+static void trig_hat()   {
+    hat_env = 0x6000u;
+    if (duck_env > 180) duck_env = 180;
+}
 
 static inline int16_t proc_kick() {
     if (!kick_env) return 0;
     kick_ph += 0x9000000u - (kick_env << 9);
-    int16_t s = (int16_t)((((kick_ph >> 31) ? 28000 : -28000) * (int32_t)kick_env) >> 16);
+    int16_t s = (int16_t)((((kick_ph >> 31) ? 28000 : -28000)
+                           * (int32_t)kick_env) >> 16);
     kick_env = kick_env > 150u ? kick_env - 150u : 0u;
     return s;
 }
 static inline int16_t proc_snare() {
     if (!snare_env) return 0;
     s_rng ^= s_rng << 7; s_rng ^= s_rng >> 9; s_rng ^= s_rng << 8;
-    int16_t s = (int16_t)(((int32_t)(int16_t)s_rng * (int32_t)snare_env) >> 16);
+    int16_t s = (int16_t)(((int32_t)(int16_t)s_rng
+                           * (int32_t)snare_env) >> 16);
     snare_env = snare_env > 100u ? snare_env - 100u : 0u;
     return s;
 }
@@ -152,62 +178,33 @@ static inline int16_t proc_hat() {
     return s;
 }
 
-// ── generate() con retry ─────────────────────────────────────────
-static void safe_generate(BytebeatGraph& graph, uint8_t zone,
-                           const EvalContext& ref_ctx) {
+// ── BytebeatGraph con crossfade ───────────────────────────────────
+// Dos grafos: activo y entrante. Crossfade de 2048 samples al cambiar.
+static BytebeatGraph g_graph_a;
+static BytebeatGraph g_graph_b;
+static bool     g_using_a    = true;
+static int32_t  g_xfade      = 256;  // Q8, 256=100% A, 0=100% B
+static bool     g_xfading    = false;
+
+static void start_new_bb(uint8_t zone, const EvalContext& ctx) {
+    // Generar en el grafo inactivo
+    BytebeatGraph& next = g_using_a ? g_graph_b : g_graph_a;
     for (int attempt = 0; attempt < 8; ++attempt) {
-        graph.generate(
+        next.generate(
             rng_next() ^ to_ms_since_boot(get_absolute_time()),
             zone, make_zone(zone));
-        EvalContext ctx = ref_ctx;
-        int nonsilent = 0;
+        EvalContext tc = ctx;
+        int ns = 0;
         for (int i = 0; i < 512; ++i) {
-            ctx.t = (uint32_t)(i * 64);
-            const int16_t s = graph.preview_evaluate(ctx);
-            if (s > 64 || s < -64) ++nonsilent;
+            tc.t = (uint32_t)(i * 64);
+            const int16_t s = next.preview_evaluate(tc);
+            if (s > 64 || s < -64) ++ns;
         }
-        if (nonsilent > 51) return;
+        if (ns > 51) break;
     }
-    graph.set_formula_a(2); graph.set_formula_b(5);
-    graph.set_rate(128);    graph.set_mask(200);
-}
-
-// ── Core1: pads + pot ─────────────────────────────────────────────
-void core1_entry() {
-    gpio_init(PIN_LED); gpio_set_dir(PIN_LED, GPIO_OUT);
-    gpio_init(PIN_ROW); gpio_set_dir(PIN_ROW, GPIO_OUT);
-    gpio_put(PIN_ROW, 0);
-    for (uint8_t c = 0; c < 4; ++c) {
-        gpio_init(PIN_COL[c]); gpio_set_dir(PIN_COL[c], GPIO_IN);
-        gpio_disable_pulls(PIN_COL[c]);
-    }
-
-    adc_init(); adc_gpio_init(PIN_POT); adc_select_input(0);
-
-    gpio_put(PIN_LED, 1);
-    calibrate_pads();
-    gpio_put(PIN_LED, 0);
-    g_ready = true;
-
-    float pot_s  = float(adc_read()) / 4095.0f;
-    uint8_t zone = 1;
-
-    while (true) {
-        pot_s += 0.12f * (float(adc_read()) / 4095.0f - pot_s);
-        g_pot = pot_s;
-
-        scan_pads();
-
-        if (just_pressed(0))  { g_randomize = true; gpio_put(PIN_LED, 1); }
-        if (just_released(0))   gpio_put(PIN_LED, 0);
-        if (just_pressed(1))    g_drum_trig |= 1u;
-        if (just_pressed(2))    g_drum_trig |= 2u;
-        if (just_pressed(3)) {
-            g_drum_trig |= 4u;
-            zone = (uint8_t)((zone + 1u) % 5u);
-            g_zone = zone; g_zone_changed = true;
-        }
-    }
+    // Iniciar crossfade hacia el nuevo grafo
+    g_xfading = true;
+    g_xfade   = 256;  // empieza en el grafo actual
 }
 
 } // namespace
@@ -226,7 +223,6 @@ int main() {
     multicore_launch_core1(core1_entry);
     while (!g_ready) i2s_write(0, 0);
 
-    BytebeatGraph graph;
     uint8_t zone = 1;
 
     EvalContext ctx{};
@@ -237,42 +233,68 @@ int main() {
     ctx.drum_color = 0.3f; ctx.drum_decay = 0.5f;
     ctx.breath_amount = 0.2f; ctx.harmonic_blend = 0.3f;
 
-    safe_generate(graph, zone, ctx);
+    // Generar fórmula inicial en graph_a
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        g_graph_a.generate(rng_next() ^ 0xDEADBEEFu, zone, make_zone(zone));
+        EvalContext tc = ctx; int ns = 0;
+        for (int i = 0; i < 512; ++i) {
+            tc.t = (uint32_t)(i * 64);
+            const int16_t s = g_graph_a.preview_evaluate(tc);
+            if (s > 64 || s < -64) ++ns;
+        }
+        if (ns > 51) break;
+    }
 
-    int32_t duck_smooth = 256;
     uint32_t cr = 0;
 
     while (true) {
         if (++cr >= 32u) {
             cr = 0;
+
             const float pot = g_pot;
             ctx.tonal = pot;
             ctx.macro = pot * 0.8f;
 
-            if (g_randomize) {
-                g_randomize = false;
-                safe_generate(graph, zone, ctx);
+            const uint8_t ev = g_pad_event;
+            if (ev) {
+                g_pad_event = 0;
+                if (ev & 1u) start_new_bb(zone, ctx);
+                if (ev & 2u) trig_kick();
+                if (ev & 4u) trig_snare();
+                if (ev & 8u) trig_hat();
             }
-            if (g_zone_changed) {
-                g_zone_changed = false;
-                zone = g_zone; ctx.zone = zone;
-                safe_generate(graph, zone, ctx);
-            }
-            const uint8_t dt = g_drum_trig;
-            if (dt) {
-                g_drum_trig = 0;
-                if (dt & 1u) trig_kick();
-                if (dt & 2u) trig_snare();
-                if (dt & 4u) trig_hat();
-            }
-            int32_t td = g_duck;
-            duck_smooth += (td - duck_smooth) >> 3;
-            if (duck_smooth >= 254) { duck_smooth = 256; g_duck = 256; }
+
+            // Duck recovery
+            duck_env += (256 - duck_env) >> 4;
+            if (duck_env > 254) duck_env = 256;
         }
 
         ctx.t++;
-        int16_t synth = graph.evaluate(ctx);
-        synth = (int16_t)((int32_t)synth * duck_smooth >> 8);
+
+        // Crossfade entre grafos
+        int16_t synth;
+        if (g_xfading) {
+            const int16_t sa = g_graph_a.evaluate(ctx);
+            const int16_t sb = g_graph_b.evaluate(ctx);
+
+            // g_xfade: 256=100%A, 0=100%B
+            // Fade de 256→0 en 2048 steps
+            synth = (int16_t)(((int32_t)sa * g_xfade
+                             + (int32_t)sb * (256 - g_xfade)) >> 8);
+
+            g_xfade -= 1;
+            if (g_xfade <= 0) {
+                g_xfade   = 0;
+                g_xfading = false;
+                g_using_a = !g_using_a;  // el nuevo grafo pasa a ser el activo
+            }
+        } else {
+            synth = g_using_a ? g_graph_a.evaluate(ctx)
+                              : g_graph_b.evaluate(ctx);
+        }
+
+        // Duck del bytebeat cuando hay drums
+        synth = (int16_t)((int32_t)synth * duck_env >> 8);
 
         int32_t out = (int32_t)synth
                     + (int32_t)proc_kick()
