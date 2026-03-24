@@ -1,3 +1,23 @@
+// main_minimal.cpp — BYT3 hardware test V1.2
+//
+// BUGS CORREGIDOS vs versión GPT original:
+//
+// BUG-1 (CRÍTICO): ACCUM_ADD=441 / ACCUM_TOP=10000 generaba solo 44 samples/seg
+//   en vez de 44100. El FIFO del PIO se vaciaba en microsegundos → silencio.
+//   FIX: ACCUM_TOP corregido a 10 en audio_engine.h (fix separado).
+//
+// BUG-2 (CRÍTICO): env_gate_ arranca en false (Phase::IDLE) → silencio total.
+//   Con el acumulador fijo, el drone suena 2ms (ENV_GATE_HOLD=88 samples)
+//   y luego decae lentamente → "LFO tenue". El pot no parece funcionar porque
+//   el sonido es casi inaudible al final del decay.
+//   FIX: set_env_loop(true) → envelope loop continuo, drone permanente.
+//
+// BUG-3 (MEDIO): g_pads.init() bloqueaba ~280ms antes del primer audio.
+//   FIX: mover después del primer retrigger.
+//
+// BUG-4 (MEDIO): set_bus_param(PARAM_DELAY_DIV) no existe → sin efecto.
+//   FIX: set_patch_param(PARAM_DELAY_DIV) en init.
+
 #include <cmath>
 #include <cstdint>
 
@@ -15,7 +35,7 @@
 #include "utils/debug_log.h"
 
 namespace {
-constexpr uint PIN_POT = 26;   // ADC0
+constexpr uint PIN_POT = 26;
 constexpr uint PIN_LED = 25;
 
 constexpr uint8_t PAD_DRONE = 0;
@@ -62,71 +82,54 @@ static float read_pot01() {
 }
 
 static void apply_macro_mapping(float macro) {
-    // El pote gobierna el morph A↔B, pero además reutiliza la semántica de macro
-    // del engine existente para validar simultáneamente síntesis, sidechain y drums.
-    g_state.set_patch_param(PARAM_MACRO, macro);
-    g_state.set_patch_param(PARAM_MORPH, macro);
-
-    const float drive = 0.10f + macro * 0.45f;
-    const float filter_macro = 0.20f + macro * 0.70f;
-    const float resonance = 0.10f + macro * 0.55f;
-    const float drum_color = 0.12f + macro * 0.82f;
-    const float drum_decay = 0.28f + macro * 0.42f;
-    const float duck = 0.60f + macro * 0.30f;
-    const float chorus = 0.04f + macro * 0.22f;
-    const float reverb_wet = 0.06f + macro * 0.18f;
-
-    g_state.set_patch_param(PARAM_DRIVE, clamp01(drive));
-    g_state.set_patch_param(PARAM_FILTER_MACRO, clamp01(filter_macro));
-    g_state.set_patch_param(PARAM_RESONANCE, clamp01(resonance));
-    g_state.set_bus_param(PARAM_DRUM_COLOR, clamp01(drum_color));
-    g_state.set_bus_param(PARAM_DRUM_DECAY, clamp01(drum_decay));
-    g_state.set_bus_param(PARAM_DUCK_AMOUNT, clamp01(duck));
-    g_state.set_bus_param(PARAM_CHORUS, clamp01(chorus));
-    g_state.set_bus_param(PARAM_REVERB_WET, clamp01(reverb_wet));
+    g_state.set_patch_param(PARAM_MACRO,        macro);
+    g_state.set_patch_param(PARAM_MORPH,        macro);
+    g_state.set_patch_param(PARAM_DRIVE,        clamp01(0.10f + macro * 0.45f));
+    g_state.set_patch_param(PARAM_FILTER_MACRO, clamp01(0.20f + macro * 0.70f));
+    g_state.set_patch_param(PARAM_RESONANCE,    clamp01(0.10f + macro * 0.55f));
+    g_state.set_bus_param(PARAM_DRUM_COLOR,     clamp01(0.12f + macro * 0.82f));
+    g_state.set_bus_param(PARAM_DRUM_DECAY,     clamp01(0.28f + macro * 0.42f));
+    g_state.set_bus_param(PARAM_DUCK_AMOUNT,    clamp01(0.60f + macro * 0.30f));
+    g_state.set_bus_param(PARAM_CHORUS,         clamp01(0.04f + macro * 0.22f));
+    g_state.set_bus_param(PARAM_REVERB_WET,     clamp01(0.06f + macro * 0.18f));
 }
 
 static void randomize_drone_from_current_engine(float macro) {
-    // Randomización acotada por el estado performático actual.
-    // No pisa todo el firmware: solo los parámetros del bytebeat engine.
-    const float chaos = 0.25f + macro * 0.70f;
-    const float motion = 0.18f + macro * 0.72f;
+    const float chaos   = 0.25f + macro * 0.70f;
+    const float motion  = 0.18f + macro * 0.72f;
     const float density = 0.20f + macro * 0.55f;
 
-    const float base_formula_a = macro * 0.65f;
-    const float base_formula_b = 1.0f - macro * 0.45f;
-
-    g_state.set_patch_param(PARAM_FORMULA_A, shaped_rand(base_formula_a, 0.95f));
-    g_state.set_patch_param(PARAM_FORMULA_B, shaped_rand(base_formula_b, 0.95f));
-    g_state.set_patch_param(PARAM_RATE, shaped_rand(0.15f + motion * 0.60f, 0.65f));
-    g_state.set_patch_param(PARAM_SHIFT, shaped_rand(0.30f + motion * 0.35f, 0.55f));
-    g_state.set_patch_param(PARAM_MASK, shaped_rand(0.40f + density * 0.35f, 0.70f));
-    g_state.set_patch_param(PARAM_FEEDBACK, shaped_rand(0.08f + chaos * 0.45f, 0.55f));
-    g_state.set_patch_param(PARAM_JITTER, shaped_rand(0.04f + chaos * 0.55f, 0.60f));
-    g_state.set_patch_param(PARAM_PHASE, shaped_rand(0.15f + motion * 0.40f, 0.65f));
-    g_state.set_patch_param(PARAM_XOR_FOLD, shaped_rand(0.05f + chaos * 0.45f, 0.60f));
-    g_state.set_patch_param(PARAM_BB_SEED, shaped_rand(0.22f + chaos * 0.50f, 0.70f));
-    g_state.set_patch_param(PARAM_FILTER_MACRO, shaped_rand(0.18f + macro * 0.60f, 0.65f));
-    g_state.set_patch_param(PARAM_RESONANCE, shaped_rand(0.06f + macro * 0.45f, 0.45f));
-    g_state.set_patch_param(PARAM_ENV_MACRO, shaped_rand(0.24f + motion * 0.40f, 0.65f));
+    g_state.set_patch_param(PARAM_FORMULA_A,    shaped_rand(macro * 0.65f,               0.95f));
+    g_state.set_patch_param(PARAM_FORMULA_B,    shaped_rand(1.0f - macro * 0.45f,        0.95f));
+    g_state.set_patch_param(PARAM_RATE,         shaped_rand(0.15f + motion  * 0.60f,     0.65f));
+    g_state.set_patch_param(PARAM_SHIFT,        shaped_rand(0.30f + motion  * 0.35f,     0.55f));
+    g_state.set_patch_param(PARAM_MASK,         shaped_rand(0.40f + density * 0.35f,     0.70f));
+    g_state.set_patch_param(PARAM_FEEDBACK,     shaped_rand(0.08f + chaos   * 0.45f,     0.55f));
+    g_state.set_patch_param(PARAM_JITTER,       shaped_rand(0.04f + chaos   * 0.55f,     0.60f));
+    g_state.set_patch_param(PARAM_PHASE,        shaped_rand(0.15f + motion  * 0.40f,     0.65f));
+    g_state.set_patch_param(PARAM_XOR_FOLD,     shaped_rand(0.05f + chaos   * 0.45f,     0.60f));
+    g_state.set_patch_param(PARAM_BB_SEED,      shaped_rand(0.22f + chaos   * 0.50f,     0.70f));
+    g_state.set_patch_param(PARAM_FILTER_MACRO, shaped_rand(0.18f + macro   * 0.60f,     0.65f));
+    g_state.set_patch_param(PARAM_RESONANCE,    shaped_rand(0.06f + macro   * 0.45f,     0.45f));
+    g_state.set_patch_param(PARAM_ENV_MACRO,    shaped_rand(0.24f + motion  * 0.40f,     0.65f));
     g_state.set_zone_live((uint8_t)(rng_next() % 5u));
 }
 
 static void send_drum_hit(DrumId drum) {
     SequencerEvent ev{};
-    ev.tick = 0u;
-    ev.type = EVT_DRUM_HIT;
+    ev.tick   = 0u;
+    ev.type   = EVT_DRUM_HIT;
     ev.target = static_cast<uint8_t>(drum);
-    ev.value = 1.0f;
+    ev.value  = 1.0f;
     enqueue_event(ev);
 }
 
 static void retrigger_drone_envelope() {
     SequencerEvent ev{};
-    ev.tick = 0u;
-    ev.type = EVT_PAD_TRIGGER;
+    ev.tick   = 0u;
+    ev.type   = EVT_PAD_TRIGGER;
     ev.target = 0u;
-    ev.value = 1.0f;
+    ev.value  = 1.0f;
     enqueue_event(ev);
 }
 
@@ -139,23 +142,37 @@ static void core1_main() {
     adc_gpio_init(PIN_POT);
     adc_select_input(0);
 
-    g_pads.init();
-
-    // Estado inicial centrado en test de síntesis + drums.
-    g_state.set_patch_param(PARAM_TONAL, 0.58f);
-    g_state.set_patch_param(PARAM_SPREAD, 0.18f);
-    g_state.set_patch_param(PARAM_ENV_ATTACK, 0.02f);
+    // Parámetros iniciales
+    g_state.set_patch_param(PARAM_TONAL,       0.58f);
+    g_state.set_patch_param(PARAM_SPREAD,      0.18f);
+    g_state.set_patch_param(PARAM_ENV_ATTACK,  0.02f);
     g_state.set_patch_param(PARAM_ENV_RELEASE, 0.72f);
-    g_state.set_patch_param(PARAM_TIME_DIV, 0.55f);
-    g_state.set_patch_param(PARAM_GLIDE, 0.08f);
-    g_state.set_bus_param(PARAM_REVERB_ROOM, 0.62f);
-    g_state.set_bus_param(PARAM_REVERB_WET, 0.14f);
-    g_state.set_bus_param(PARAM_DELAY_DIV, 0.40f);
-    g_state.set_bus_param(PARAM_DELAY_FB, 0.22f);
-    g_state.set_bus_param(PARAM_DELAY_WET, 0.10f);
-    g_state.set_bus_param(PARAM_DUCK_AMOUNT, 0.82f);
+    g_state.set_patch_param(PARAM_TIME_DIV,    0.55f);
+    g_state.set_patch_param(PARAM_GLIDE,       0.08f);
+    g_state.set_patch_param(PARAM_DELAY_DIV,   0.40f);  // FIX BUG-4: patch param, no bus
+    g_state.set_bus_param(PARAM_REVERB_ROOM,   0.62f);
+    g_state.set_bus_param(PARAM_REVERB_WET,    0.14f);
+    g_state.set_bus_param(PARAM_DELAY_FB,      0.22f);
+    g_state.set_bus_param(PARAM_DELAY_WET,     0.10f);
+    g_state.set_bus_param(PARAM_DUCK_AMOUNT,   0.82f);
 
-    sleep_ms(60);
+    // FIX BUG-2: env_loop=true → envelope continuo, drone permanente.
+    // Sin esto, el envelope dura solo ENV_GATE_HOLD=88 samples (~2ms) y
+    // luego decae → el pot parece no funcionar porque el sonido es casi inaudible.
+    g_state.set_env_loop(true);
+
+    // Leer pot inicial
+    g_pot_smoothed = float(adc_read()) * (1.0f / 4095.0f);
+    apply_macro_mapping(g_pot_smoothed);
+
+    // Arranque: randomizar y disparar drone inmediatamente
+    randomize_drone_from_current_engine(g_pot_smoothed);
+    retrigger_drone_envelope();
+    gpio_put(PIN_LED, 1);
+
+    // FIX BUG-3: calibrar DESPUÉS del primer trigger para no bloquear el audio
+    g_pads.init();
+    gpio_put(PIN_LED, 0);
 
     while (true) {
         const float macro = read_pot01();
@@ -171,15 +188,9 @@ static void core1_main() {
         if (g_pads.just_released(PAD_DRONE)) {
             gpio_put(PIN_LED, 0);
         }
-        if (g_pads.just_pressed(PAD_KICK)) {
-            send_drum_hit(DRUM_KICK);
-        }
-        if (g_pads.just_pressed(PAD_SNARE)) {
-            send_drum_hit(DRUM_SNARE);
-        }
-        if (g_pads.just_pressed(PAD_HAT)) {
-            send_drum_hit(DRUM_HAT);
-        }
+        if (g_pads.just_pressed(PAD_KICK))  send_drum_hit(DRUM_KICK);
+        if (g_pads.just_pressed(PAD_SNARE)) send_drum_hit(DRUM_SNARE);
+        if (g_pads.just_pressed(PAD_HAT))   send_drum_hit(DRUM_HAT);
 
         sleep_us(1800);
     }
@@ -191,8 +202,9 @@ int main() {
     stdio_init_all();
     sleep_ms(250);
 
-    LOG("=== BYT3 minimal hardware test ===");
-    LOG("Pads: GP5 row0 drive, GP8/9/13/14 sense | Pot: GP26 | I2S: GP10/11/12");
+    LOG("=== BYT3 minimal hardware test V1.2 ===");
+    LOG("Pads: GP5 drive | GP8/9/13/14 sense | Pot: GP26 | I2S: GP10/11/12");
+    LOG("XSMT del PCM5102 debe estar soldado a 3V3");
 
     g_state.init();
     g_audio_engine.init(&g_audio_out, &g_state);
