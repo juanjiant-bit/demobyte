@@ -1,18 +1,21 @@
-// main_minimal.cpp — BYT3 hardware test V2.0
+// main_minimal.cpp — BYT3 hardware test V2.1
 //
-// Sigue el patrón exacto del código que ya funciona (demobyte_i2s_pot_pads):
-//   Core0 = tight loop de audio, sin timer, sin IRQ
-//   Core1 = escaneo de pads + ADC, escribe variables volatile
+// CAMBIOS vs V2.0:
+//   FIX-POT: lee GP26 directamente con adc_read() sin pasar por MUX CD4051
+//   FIX-PADS: preset tuneado para pistas PCB 5x5mm (baja capacitancia)
+//   ADD: modo diagnóstico de pads por serial USB (ver DIAG_PADS abajo)
 //
-// Controles:
-//   Pot P0  → macro bytebeat (timbre / densidad)
-//   Pad 0   → randomiza el sonido bytebeat
-//   Pad 1   → kick drum (ruido corto)
-//   Pad 2   → snare drum (ruido medio)
-//   Pad 3   → hat (clic corto)
+// DIAGNÓSTICO DE PADS:
+//   Conectate por serial USB (115200 baud, cualquier terminal)
+//   El firmware imprime cada 2 segundos los valores raw de cada pad:
+//     baseline = sin dedo
+//     raw      = con/sin dedo
+//     delta    = raw - baseline (>0 = presión detectada)
+//   Usá estos valores para tunear hyst_on en el preset.
 
 #include <cstdint>
 #include <cmath>
+#include <cstdio>
 
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
@@ -21,7 +24,6 @@
 #include "hardware/clocks.h"
 #include "pcm5102_i2s.pio.h"
 
-#include "io/adc_handler.h"
 #include "io/cap_pad_handler.h"
 
 namespace {
@@ -30,23 +32,49 @@ namespace {
 constexpr uint PIN_BCLK     = 10;
 constexpr uint PIN_DIN      = 12;
 constexpr uint PIN_LED      = 25;
+constexpr uint PIN_POT      = 26;   // GP26 directo, sin MUX
 constexpr uint32_t SAMPLE_RATE = 44100;
 
-// ── Pad layout (matriz 3x5) ───────────────────────────────────────
-constexpr uint8_t PAD_DRONE = 0;   // REC    → randomiza bytebeat
-constexpr uint8_t PAD_KICK  = 1;   // PLAY   → kick
-constexpr uint8_t PAD_SNARE = 2;   // SHIFT  → snare
-constexpr uint8_t PAD_HAT   = 3;   // SNAP1  → hat
+// ── Pad layout ────────────────────────────────────────────────────
+constexpr uint8_t PAD_DRONE = 0;
+constexpr uint8_t PAD_KICK  = 1;
+constexpr uint8_t PAD_SNARE = 2;
+constexpr uint8_t PAD_HAT   = 3;
+
+// ── Preset tuneado para pistas PCB 5x5mm ─────────────────────────
+// Pistas chicas de cobre tienen capacitancia baja → tiempos de carga cortos.
+// discharge_us bajo para no desperdiciar tiempo descargando.
+// hyst_on bajo para mayor sensibilidad.
+// Ajustá hyst_on según el diagnóstico serial:
+//   sin dedo: delta ≈ 0..5us   → hyst_on = 8..12
+//   con dedo: delta ≈ 15..80us → hyst_on = 8..12 (mitad del delta mínimo con dedo)
+static constexpr CapPadHandler::Preset PRESET_PCB_SMALL() {
+    CapPadHandler::Preset p{};
+    p.discharge_us   = 80;    // bajo para PCB (era 150 en DRY)
+    p.max_charge_us  = 1500;  // timeout antes de declarar pad sin conectar
+    p.hyst_on_us     = 10;    // muy sensible para pistas chicas (era 30)
+    p.hyst_off_us    = 6;     // histéresis de apagado
+    p.at_range_us    = 80;    // rango para aftertouch
+    p.at_curve       = 1.5f;
+    p.calib_samples  = 80;    // menos muestras = calibración más rápida (~3s)
+    p.baseline_alpha = 0.003f;
+    return p;
+}
 
 // ── Estado compartido Core0↔Core1 ────────────────────────────────
-volatile uint32_t g_bytebeat_t   = 0;       // tiempo del bytebeat (escrito por Core0)
-volatile float    g_macro        = 0.5f;    // 0..1, del pot
-volatile uint8_t  g_formula      = 0;       // fórmula activa 0..7
-volatile bool     g_randomize    = false;   // pedido de randomizar
-volatile uint8_t  g_drum_trig    = 0;       // bitmask: bit0=kick, bit1=snare, bit2=hat
+volatile float    g_macro        = 0.5f;
+volatile uint8_t  g_formula      = 0;
+volatile bool     g_randomize    = false;
+volatile uint8_t  g_drum_trig    = 0;
 volatile bool     g_controls_ready = false;
 
-// ── RNG simple ───────────────────────────────────────────────────
+// ── Diagnóstico de pads ──────────────────────────────────────────
+// Cambiá a false para deshabilitar el output serial
+static constexpr bool DIAG_PADS = true;
+volatile uint32_t g_diag_raw[CapPadHandler::NUM_PADS]      = {};
+volatile uint32_t g_diag_baseline[CapPadHandler::NUM_PADS] = {};
+
+// ── RNG ───────────────────────────────────────────────────────────
 static uint32_t rng_state = 0xDEADBEEFu;
 static inline uint32_t rng_next() {
     rng_state ^= rng_state << 13;
@@ -55,123 +83,144 @@ static inline uint32_t rng_next() {
     return rng_state;
 }
 
-// ── I2S write ────────────────────────────────────────────────────
-static PIO g_pio;
+// ── I2S ───────────────────────────────────────────────────────────
+static PIO  g_pio;
 static uint g_sm;
-
 static inline void i2s_write(int16_t l, int16_t r) {
     pio_sm_put_blocking(g_pio, g_sm, (uint32_t)(uint16_t)l << 16);
     pio_sm_put_blocking(g_pio, g_sm, (uint32_t)(uint16_t)r << 16);
 }
 
-// ── Bytebeat engine ──────────────────────────────────────────────
-// 8 fórmulas clásicas que siempre producen sonido audible y variado
-static inline uint8_t bytebeat_eval(uint32_t t, uint8_t formula, uint8_t rate, uint8_t mask) {
-    const uint32_t tr = t >> (rate >> 5);  // rate 0..7 -> shift 0..7
-    uint32_t v;
-    switch (formula & 7u) {
-        case 0: v = (tr >> 6) ^ (tr >> 8);                             break;
-        case 1: v = tr * ((tr >> 5 | tr >> 8) & 63);                  break;
-        case 2: v = (tr >> 4) | (tr >> 8);                             break;
-        case 3: v = tr * (tr >> 11 & tr >> 8 & 63);                   break;
-        case 4: v = tr >> 3 ^ tr >> 8 ^ tr >> 12;                     break;
-        case 5: v = (tr | tr >> 9 | tr >> 11) * ((tr >> 14) & 3);     break;
-        case 6: v = tr * (tr >> 8 | tr >> 6) >> 4;                    break;
-        case 7: v = (tr >> 5 ^ tr >> 12) * (tr >> 4 | tr >> 8);       break;
-        default: v = tr; break;
-    }
-    return (uint8_t)((v & mask) ^ (v >> 8));
+// ── Pot directo GP26 ─────────────────────────────────────────────
+static float g_pot_smooth = 0.5f;
+static inline float read_pot() {
+    const float raw = float(adc_read()) * (1.0f / 4095.0f);
+    g_pot_smooth += 0.15f * (raw - g_pot_smooth);
+    return g_pot_smooth;
 }
 
-// ── Drum engines ─────────────────────────────────────────────────
-static uint32_t kick_phase = 0;
-static uint32_t kick_env   = 0;     // Q16, decae
-static uint32_t snare_rng  = 0x12345678u;
-static uint32_t snare_env  = 0;
+// ── Bytebeat ─────────────────────────────────────────────────────
+static inline uint8_t bytebeat_eval(uint32_t t, uint8_t formula, uint8_t rate) {
+    const uint32_t tr = t >> (rate & 7u);
+    switch (formula & 7u) {
+        case 0: return (uint8_t)((tr >> 6) ^ (tr >> 8));
+        case 1: return (uint8_t)(tr * ((tr >> 5 | tr >> 8) & 63u));
+        case 2: return (uint8_t)((tr | tr >> 9 | tr >> 11) * ((tr >> 14) & 3u));
+        case 3: return (uint8_t)(tr * (tr >> 11 & tr >> 8 & 63u));
+        case 4: return (uint8_t)(tr >> 3 ^ tr >> 8 ^ tr >> 12);
+        case 5: return (uint8_t)((tr >> 4) ^ (tr >> 7) ^ (tr >> 16));
+        case 6: return (uint8_t)(tr * (tr >> 8 | tr >> 6) >> 4);
+        case 7: return (uint8_t)((tr >> 5 ^ tr >> 12) * (tr >> 4 | tr >> 8));
+        default: return (uint8_t)tr;
+    }
+}
+
+// ── Drums ────────────────────────────────────────────────────────
+static uint32_t kick_phase = 0, kick_env = 0;
+static uint32_t snare_rng  = 0x12345678u, snare_env = 0;
 static uint32_t hat_env    = 0;
 
 static void trigger_kick()  { kick_env  = 0xFFFFu; kick_phase = 0; }
-static void trigger_snare() { snare_env = 0xFFFFu; snare_rng = rng_next(); }
-static void trigger_hat()   { hat_env   = 0x6000u; }
+static void trigger_snare() { snare_env = 0xFFFFu; }
+static void trigger_hat()   { hat_env   = 0x7000u; }
 
-static inline int16_t process_kick() {
-    if (kick_env == 0) return 0;
-    kick_phase += 0x8000000u - (kick_env << 10);  // freq decae con env
-    const int16_t osc = (kick_phase & 0x80000000u) ? 28000 : -28000;
-    const int16_t out = (int16_t)(((int32_t)osc * (int32_t)kick_env) >> 16);
-    kick_env = (kick_env > 180u) ? (kick_env - 180u) : 0u;
+static inline int16_t proc_kick() {
+    if (!kick_env) return 0;
+    kick_phase += 0x9000000u - (kick_env << 9);
+    int16_t out = (int16_t)((((kick_phase & 0x80000000u) ? 28000 : -28000) * (int32_t)kick_env) >> 16);
+    kick_env = kick_env > 160u ? kick_env - 160u : 0u;
     return out;
 }
-
-static inline int16_t process_snare() {
-    if (snare_env == 0) return 0;
+static inline int16_t proc_snare() {
+    if (!snare_env) return 0;
     snare_rng ^= snare_rng << 7; snare_rng ^= snare_rng >> 9; snare_rng ^= snare_rng << 8;
-    const int16_t noise = (int16_t)(snare_rng & 0xFFFFu);
-    const int16_t out   = (int16_t)(((int32_t)noise * (int32_t)snare_env) >> 16);
-    snare_env = (snare_env > 120u) ? (snare_env - 120u) : 0u;
+    int16_t out = (int16_t)(((int32_t)(int16_t)snare_rng * (int32_t)snare_env) >> 16);
+    snare_env = snare_env > 110u ? snare_env - 110u : 0u;
+    return out;
+}
+static inline int16_t proc_hat() {
+    if (!hat_env) return 0;
+    uint32_t h = hat_env * 0x9E3779B9u;
+    int16_t out = (int16_t)(((int32_t)(int16_t)h * (int32_t)hat_env) >> 16);
+    hat_env = hat_env > 700u ? hat_env - 700u : 0u;
     return out;
 }
 
-static inline int16_t process_hat() {
-    if (hat_env == 0) return 0;
-    uint32_t hr = hat_env * 0x9E3779B9u;
-    const int16_t noise = (int16_t)(hr & 0xFFFFu);
-    const int16_t out   = (int16_t)(((int32_t)noise * (int32_t)hat_env) >> 16);
-    hat_env = (hat_env > 800u) ? (hat_env - 800u) : 0u;
-    return out;
-}
-
-// ── Core1: control ───────────────────────────────────────────────
+// ── Core1: pads + pot ─────────────────────────────────────────────
 void core1_entry() {
     gpio_init(PIN_LED);
     gpio_set_dir(PIN_LED, GPIO_OUT);
     gpio_put(PIN_LED, 1);
 
-    AdcHandler adc;
-    CapPadHandler pads;
+    // FIX-POT: inicializar ADC para GP26 directo, sin MUX
+    adc_init();
+    adc_gpio_init(PIN_POT);
+    adc_select_input(0);  // ADC0 = GP26
 
-    adc.init();
-    pads.init(CapPadHandler::Preset::DRY());
+    CapPadHandler pads;
+    pads.init(PRESET_PCB_SMALL());
     sleep_ms(50);
     pads.calibrate();
+
+    // Exponer baselines al diagnóstico
+    if (DIAG_PADS) {
+        for (uint8_t i = 0; i < CapPadHandler::NUM_PADS; ++i)
+            g_diag_baseline[i] = pads.get_baseline_us(i);
+    }
 
     gpio_put(PIN_LED, 0);
     g_controls_ready = true;
 
-    bool prev_drone = false;
-    bool prev_kick  = false;
-    bool prev_snare = false;
-    bool prev_hat   = false;
+    bool prev[4] = {};
+    uint32_t diag_timer = 0;
 
     while (true) {
-        adc.poll();
+        // Leer pot directo
+        g_macro = read_pot();
+
         pads.scan();
 
-        // Macro desde pot 0
-        g_macro = adc.get(0);
+        // Exponer raw para diagnóstico
+        if (DIAG_PADS) {
+            for (uint8_t i = 0; i < CapPadHandler::NUM_PADS; ++i)
+                g_diag_raw[i] = pads.get_raw_us(i);
+        }
 
-        // Pad edge detection
-        const bool drone = pads.is_pressed(PAD_DRONE);
-        const bool kick  = pads.is_pressed(PAD_KICK);
-        const bool snare = pads.is_pressed(PAD_SNARE);
-        const bool hat   = pads.is_pressed(PAD_HAT);
+        // Edge detection de los 4 pads activos
+        const bool cur[4] = {
+            pads.is_pressed(PAD_DRONE),
+            pads.is_pressed(PAD_KICK),
+            pads.is_pressed(PAD_SNARE),
+            pads.is_pressed(PAD_HAT),
+        };
 
-        if (drone && !prev_drone) {
-            // Nueva fórmula aleatoria al tocar PAD_DRONE
-            g_formula   = (uint8_t)(rng_next() % 8u);
+        if (cur[0] && !prev[0]) {
+            g_formula  = (uint8_t)(rng_next() % 8u);
             g_randomize = true;
             gpio_put(PIN_LED, 1);
         }
-        if (!drone && prev_drone) gpio_put(PIN_LED, 0);
+        if (!cur[0] && prev[0]) gpio_put(PIN_LED, 0);
+        if (cur[1] && !prev[1]) g_drum_trig |= 1u;
+        if (cur[2] && !prev[2]) g_drum_trig |= 2u;
+        if (cur[3] && !prev[3]) g_drum_trig |= 4u;
+        for (int i = 0; i < 4; ++i) prev[i] = cur[i];
 
-        if (kick  && !prev_kick)  g_drum_trig |= 1u;
-        if (snare && !prev_snare) g_drum_trig |= 2u;
-        if (hat   && !prev_hat)   g_drum_trig |= 4u;
-
-        prev_drone = drone;
-        prev_kick  = kick;
-        prev_snare = snare;
-        prev_hat   = hat;
+        // Diagnóstico serial: imprime cada 2 segundos
+        if (DIAG_PADS && ++diag_timer >= 2000u) {
+            diag_timer = 0;
+            printf("\n--- PAD DIAG (us) ---\n");
+            printf("%-4s %-8s %-8s %-8s %-6s\n", "pad", "baseline", "raw", "delta", "state");
+            for (uint8_t i = 0; i < CapPadHandler::NUM_PADS; ++i) {
+                const uint32_t base  = g_diag_baseline[i];
+                const uint32_t raw   = g_diag_raw[i];
+                const int32_t  delta = (int32_t)raw - (int32_t)base;
+                const bool     on    = pads.is_pressed(i);
+                printf("%-4u %-8lu %-8lu %-8ld %-6s\n",
+                       i, (unsigned long)base, (unsigned long)raw,
+                       (long)delta, on ? "ON" : ".");
+            }
+            printf("pot=%.3f  macro=%.3f\n", (double)g_pot_smooth, (double)g_macro);
+        }
 
         sleep_ms(1);
     }
@@ -183,45 +232,29 @@ void core1_entry() {
 int main() {
     set_sys_clock_khz(125000, true);
     stdio_init_all();
+    sleep_ms(100);
 
-    // I2S init
     g_pio = pio0;
     const uint offset = pio_add_program(g_pio, &pcm5102_i2s_program);
     g_sm = pio_claim_unused_sm(g_pio, true);
     pcm5102_i2s_program_init(g_pio, g_sm, offset, PIN_DIN, PIN_BCLK, SAMPLE_RATE);
     for (int i = 0; i < 32; ++i) i2s_write(0, 0);
 
-    // Arrancar Core1 (pads + ADC)
     multicore_launch_core1(core1_entry);
-
-    // Esperar calibración de pads
     while (!g_controls_ready) i2s_write(0, 0);
 
-    // Parámetros del bytebeat
-    uint8_t  formula = 0;
-    uint8_t  rate    = 3;    // velocidad/pitch base
-    uint8_t  mask    = 0xFF;
-    uint32_t t       = 0;
-
-    // Envelope del drone
-    uint32_t env_q16  = 0xFFFFu;  // siempre encendido al arranque
-    bool     env_on   = true;
+    uint8_t  formula = 0, rate = 2;
+    uint32_t t = 0;
 
     while (true) {
-        // Leer controles compartidos
         const float macro = g_macro;
 
-        // Randomizar si se pidió
         if (g_randomize) {
             g_randomize = false;
             formula = g_formula;
-            rate    = (uint8_t)(rng_next() % 6u);
-            mask    = (uint8_t)(0xC0u | (rng_next() % 64u));
-            env_q16 = 0xFFFFu;
-            env_on  = true;
+            rate    = (uint8_t)(rng_next() % 5u);
         }
 
-        // Triggers de drums
         const uint8_t drum = g_drum_trig;
         if (drum) {
             g_drum_trig = 0;
@@ -230,23 +263,17 @@ int main() {
             if (drum & 4u) trigger_hat();
         }
 
-        // Bytebeat
-        const uint8_t raw = bytebeat_eval(t, formula, rate, mask);
-        // Macro controla el mix entre el bytebeat crudo y una versión
-        // suavizada para que el pot sea audible
-        const uint8_t macro_scaled = (uint8_t)(macro * 255.0f);
-        const uint8_t mixed = (uint8_t)(
-            ((uint32_t)raw * macro_scaled + (uint32_t)(raw >> 2) * (255u - macro_scaled)) >> 8
-        );
-        int16_t synth = (int16_t)((int)(mixed) - 128) << 7;
+        // Bytebeat: pot controla rate (pitch/velocidad) en rango audible
+        // macro 0..1 → rate shift 0..4 → pitch de grave a agudo
+        const uint8_t macro_rate = rate + (uint8_t)(macro * 3.0f);
+        const uint8_t raw = bytebeat_eval(t, formula, macro_rate > 7u ? 7u : macro_rate);
+        int16_t synth = (int16_t)((int)(raw) - 128) << 8;
 
-        // Drums
-        const int16_t kick_s  = process_kick();
-        const int16_t snare_s = process_snare();
-        const int16_t hat_s   = process_hat();
-
-        // Mix
-        int32_t out = (int32_t)synth + (int32_t)kick_s + (int32_t)snare_s + (int32_t)hat_s;
+        // Mix con drums
+        int32_t out = (int32_t)synth
+                    + (int32_t)proc_kick()
+                    + (int32_t)proc_snare()
+                    + (int32_t)proc_hat();
         if (out >  32767) out =  32767;
         if (out < -32768) out = -32768;
 

@@ -10,7 +10,6 @@ pico_sdk_init()
 
 add_executable(demobyte_i2s_pot_pads
     main.cpp
-    io/adc_handler.cpp
     io/cap_pad_handler.cpp
 )
 
