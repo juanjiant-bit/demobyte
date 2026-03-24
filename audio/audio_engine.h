@@ -293,8 +293,8 @@ private:
     uint32_t    env_gate_hold_ctr_ = 0;
 
     uint32_t accumulator_  = 0;
-    static constexpr uint32_t ACCUM_ADD = 441;  // V1.22 FIX: was 441/10000 (44 samples/sec!), corrected ratio for 44100/sec
-    static constexpr uint32_t ACCUM_TOP = 10;    // V1.22 FIX: 441/10 = 44.1 samples per 1ms timer tick = 44100/sec
+    static constexpr uint32_t ACCUM_ADD = 441;
+    static constexpr uint32_t ACCUM_TOP = 10;    // FIX: era 10000 -> generaba 44 samples/sec en vez de 44100
 
 
     // Cache de control-rate para evitar recalcular setters del DSP sin cambios

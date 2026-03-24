@@ -24,7 +24,6 @@
 #include "hardware/gpio.h"
 #include "../state/encoder_state.h"
 #include "ws2812.pio.h"   // generado por pioasm en tiempo de compilación
-#include "led_update_params.h"  // V1.22: LedUpdateParams para sobrecarga de update()
 
 enum class ActionFeedback : uint8_t {
     COPY = 0,
@@ -120,10 +119,6 @@ public:
                 bool     manual_step_write,
                 bool     armed_record,
                 uint8_t  preroll_steps_left);
-
-    // V1.22: sobrecarga con struct — evita los 22 argumentos posicionales.
-    // Requiere led_update_params.h (incluido abajo del bloque de includes).
-    void update(const struct LedUpdateParams& p);
 
     // ── Eventos one-shot (llamar desde input_router o main) ─────
     void on_snapshot_trigger(uint8_t slot);        // flash en ese LED
@@ -965,15 +960,4 @@ inline void LedController::on_home_progress(float progress, uint8_t level) {
         home_level_   = 0;
     }
     dirty_ = true;
-}
-
-// V1.22: implementación de la sobrecarga con struct
-inline void LedController::update(const LedUpdateParams& p) {
-    update(p.tick_ppqn, p.active_slot, p.is_playing, p.is_rec,
-           p.shift_held, p.shift_rec_held, p.note_mode_active,
-           p.env_loop_active, p.snapshot_valid_mask, p.snapshot_mute_mask,
-           p.sequence_view_active, p.sequence_len, p.sequence_page_base,
-           p.playhead_step, p.write_step, p.page_snap_mask,
-           p.page_note_mask, p.page_drum_mask, p.page_motion_mask,
-           p.manual_step_write, p.armed_record, p.preroll_steps_left);
 }

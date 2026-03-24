@@ -12,12 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install basic tools only
+      - name: Install basic tools
         run: |
           sudo apt update
           sudo apt install -y cmake git python3
 
-      - name: Install ARM toolchain (fast)
+      - name: Install ARM toolchain
         uses: carlosperate/arm-none-eabi-gcc-action@v1
 
       - name: Clone pico-sdk
@@ -31,14 +31,15 @@ jobs:
 
       - name: Configure
         run: |
-          mkdir build
-          cd build
-          cmake .. -DPICO_BOARD=pico -DBYT3_MINIMAL_HW=ON
+          mkdir build && cd build
+          cmake .. -DPICO_BOARD=pico \
+                   -DBYT3_MINIMAL_HW=ON \
+                   -DBYT3_DIAG=ON
 
-      - name: Build minimal only
+      - name: Build
         run: |
           cd build
-          make bytebeat_machine_minimal -j4
+          make bytebeat_machine_minimal bytebeat_diag -j4
 
       - name: Upload UF2
         uses: actions/upload-artifact@v4
