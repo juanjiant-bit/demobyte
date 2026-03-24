@@ -1,8 +1,0 @@
-
-Stage 5A — Algorithm-aware morph shaping
-
-- Added algo_morph_bias_ array
-- Each algorithm now shifts morph behavior slightly
-- More expressive differences without UI
-
-Next: expose control or modulation

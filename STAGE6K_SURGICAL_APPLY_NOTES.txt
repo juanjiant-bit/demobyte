@@ -1,9 +1,0 @@
-Stage 6K — Surgical apply
-
-Applied exact diffs:
-- floatbeat_seed.h: fb_tri/fb_softclip -> f_tri/f_softclip
-- audio_engine.cpp: SnapshotVoice final block replaced with morph+dry routing; float_mix mutable
-- float_ops.h: f_wrap01 uses int cast instead of floorf
-- operators.cpp: op_pm uses int cast instead of floorf
-
-This pass targets compile-breakers and hot-path cleanup only.
