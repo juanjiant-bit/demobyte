@@ -1,58 +1,60 @@
-// main.cpp — BYT3 hardware test V3.0
+// main.cpp — BYT3 hardware test V3.1
 //
-// Motor bytebeat real (BytebeatGraph del stage11) + pads auto-calibrados
-// Patrón: Core0 tight loop I2S, Core1 controles volatile
+// Pinout exacto del hardware físico:
+//   GP5  = ROW (drive común de los 4 pads) + 100nF a GND
+//   GP8  = SNAP pad (pad 0 = randomize bytebeat)
+//   GP9  = KICK pad (pad 1)
+//   GP13 = SNARE pad (pad 2)
+//   GP14 = HAT pad (pad 3)
+//   GP26 = pot directo (ADC0)
+//   GP10 = BCK, GP11 = LCK, GP12 = DIN (I2S PCM5102)
+//   GP25 = LED onboard
 //
-// CONTROLES:
-//   Pot P0   → macro (timbre principal, audible inmediatamente)
-//   Pad  0   → nueva semilla + fórmula aleatoria, LED prende
-//   Pad  1   → kick drum
-//   Pad  2   → snare
-//   Pad  3   → hat
-//   Pad  4   → cambia zona (0..4: melódico→caos), cada toque +1
-//   Pad  5   → morph +32 (mezcla entre fórmula A y B)
-//   Pad  6   → rate +24 (pitch/velocidad)
+// Circuito por pad: GP5 --1MΩ-- PAD_COBRE -- GP_col (sin pulls internos)
+//
+// Motor: BytebeatGraph real del stage11
 
 #include <cstdint>
 #include <cmath>
-
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "hardware/pio.h"
 #include "hardware/adc.h"
+#include "hardware/timer.h"
 #include "hardware/clocks.h"
 #include "pcm5102_i2s.pio.h"
-
-#include "io/cap_pad_handler.h"
 #include "synth/bytebeat_graph.h"
 #include "synth/zone_config.h"
 
 namespace {
 
-constexpr uint PIN_BCLK = 10;
-constexpr uint PIN_DIN  = 12;
-constexpr uint PIN_LED  = 25;
-constexpr uint PIN_POT  = 26;
+// ── Pines ─────────────────────────────────────────────────────────
+constexpr uint PIN_ROW   = 5;
+constexpr uint PIN_COL[4] = {8, 9, 13, 14};
+constexpr uint PIN_LED   = 25;
+constexpr uint PIN_POT   = 26;
+constexpr uint PIN_BCLK  = 10;
+constexpr uint PIN_DIN   = 12;
 
+// ── I2S ───────────────────────────────────────────────────────────
 static PIO  g_pio;
 static uint g_sm;
-
 static inline void i2s_write(int16_t l, int16_t r) {
     pio_sm_put_blocking(g_pio, g_sm, (uint32_t)(uint16_t)l << 16);
     pio_sm_put_blocking(g_pio, g_sm, (uint32_t)(uint16_t)r << 16);
 }
 
 // ── Estado compartido ─────────────────────────────────────────────
-volatile float   g_macro        = 0.5f;
-volatile bool    g_randomize    = false;
-volatile uint8_t g_zone         = 1;
-volatile bool    g_zone_changed = false;
-volatile uint8_t g_morph        = 128;
+volatile float   g_macro         = 0.5f;
+volatile bool    g_randomize     = false;
+volatile uint8_t g_zone          = 1;
+volatile bool    g_zone_changed  = false;
+volatile uint8_t g_morph         = 128;
 volatile bool    g_morph_changed = false;
-volatile uint8_t g_rate         = 128;
+volatile uint8_t g_rate          = 128;
 volatile bool    g_rate_changed  = false;
-volatile uint8_t g_drum_trig    = 0;
-volatile bool    g_ready        = false;
+volatile uint8_t g_drum_trig     = 0;
+volatile bool    g_ready         = false;
 
 // ── RNG ───────────────────────────────────────────────────────────
 static uint32_t g_rng = 0x12345678u;
@@ -61,24 +63,94 @@ static inline uint32_t rng_next() {
     return g_rng;
 }
 
-// ── Preset tuneado para pistas PCB pequeñas ──────────────────────
-static constexpr CapPadHandler::Preset PRESET_PCB() {
-    CapPadHandler::Preset p{};
-    p.discharge_us   = 60;
-    p.max_charge_us  = 1200;
-    p.hyst_on_us     = 8;
-    p.hyst_off_us    = 5;
-    p.at_range_us    = 60;
-    p.at_curve       = 1.2f;
-    p.calib_samples  = 60;
-    p.baseline_alpha = 0.008f;
-    return p;
+// ── Pad handler: 1 ROW, 4 COLs ───────────────────────────────────
+// Mide el tiempo de carga capacitiva por pad.
+// GP5 (ROW) descarga el capacitor, luego lo carga hacia HIGH.
+// GPx (COL) detecta cuándo el pin sube → ese tiempo = carga capacitiva.
+// Con dedo encima: más capacitancia → más tiempo de carga.
+//
+// Preset para pistas PCB pequeñas (~5x5mm):
+//   discharge_us  = 60    — descarga rápida
+//   max_charge_us = 1200  — timeout si no hay señal
+//   hyst_on_us    = 8     — sensibilidad alta
+//   hyst_off_us   = 5     — histéresis de release
+
+struct PadState {
+    float    baseline[4]  = {200, 200, 200, 200}; // µs, se calibra solo
+    uint32_t raw[4]       = {};
+    bool     pressed[4]   = {};
+    bool     prev[4]      = {};
+};
+
+static PadState g_pads;
+
+// Mide el tiempo de carga del pad col_idx (0..3)
+static uint32_t measure_pad(uint8_t col_idx) {
+    const uint col_pin = PIN_COL[col_idx];
+
+    // Descargar
+    gpio_put(PIN_ROW, 0);
+    sleep_us(60);
+
+    // Cargar y medir
+    const uint32_t t0 = time_us_32();
+    gpio_put(PIN_ROW, 1);
+    while (!gpio_get(col_pin)) {
+        if ((time_us_32() - t0) >= 1200u) {
+            gpio_put(PIN_ROW, 0);
+            return 1200u;
+        }
+    }
+    const uint32_t dt = time_us_32() - t0;
+    gpio_put(PIN_ROW, 0);
+    return dt;
+}
+
+// Calibración: 80 muestras por pad, ~3 segundos total
+static void calibrate_pads() {
+    gpio_put(PIN_ROW, 0);
+    sleep_ms(30);
+    for (uint8_t c = 0; c < 4; ++c) {
+        uint64_t sum = 0;
+        for (uint8_t s = 0; s < 80; ++s) {
+            sum += measure_pad(c);
+            sleep_us(80);
+        }
+        g_pads.baseline[c] = float(sum / 80);
+    }
+}
+
+// Scan de los 4 pads
+static void scan_pads() {
+    for (uint8_t c = 0; c < 4; ++c) {
+        g_pads.prev[c] = g_pads.pressed[c];
+        const uint32_t raw = measure_pad(c);
+        g_pads.raw[c] = raw;
+
+        const float base  = g_pads.baseline[c];
+        const float delta = float(raw) - base;
+        const bool was_on = g_pads.pressed[c];
+
+        // Hysteresis: on a 8µs, off a 5µs por encima del baseline
+        const bool is_on = was_on ? (delta >= 5.0f)
+                                  : (delta >= 8.0f && raw < 1200u);
+        g_pads.pressed[c] = is_on;
+
+        // Actualizar baseline solo cuando no hay toque
+        if (!is_on) {
+            g_pads.baseline[c] += 0.008f * (float(raw) - base);
+        }
+    }
+}
+
+static inline bool just_pressed(uint8_t i) {
+    return g_pads.pressed[i] && !g_pads.prev[i];
 }
 
 // ── Drums ────────────────────────────────────────────────────────
-static uint32_t kick_ph  = 0, kick_env  = 0;
-static uint32_t s_rng    = 0xABCDu, snare_env = 0;
-static uint32_t hat_env  = 0;
+static uint32_t kick_ph = 0, kick_env = 0;
+static uint32_t s_rng = 0xABCDu, snare_env = 0;
+static uint32_t hat_env = 0;
 
 static void trig_kick()  { kick_env = 0xFFFFu; kick_ph = 0; }
 static void trig_snare() { snare_env = 0xFFFFu; s_rng = rng_next(); }
@@ -106,25 +178,33 @@ static inline int16_t proc_hat() {
     return s;
 }
 
-// ── Core1 ─────────────────────────────────────────────────────────
+// ── Core1: pads + pot ─────────────────────────────────────────────
 void core1_entry() {
-    gpio_init(PIN_LED); gpio_set_dir(PIN_LED, GPIO_OUT);
-    gpio_put(PIN_LED, 1);  // LED ON durante calibración
+    // GPIO setup
+    gpio_init(PIN_LED);  gpio_set_dir(PIN_LED, GPIO_OUT);
+    gpio_init(PIN_ROW);  gpio_set_dir(PIN_ROW, GPIO_OUT);
+    gpio_put(PIN_ROW, 0);
 
+    for (uint8_t c = 0; c < 4; ++c) {
+        gpio_init(PIN_COL[c]);
+        gpio_set_dir(PIN_COL[c], GPIO_IN);
+        gpio_disable_pulls(PIN_COL[c]);
+    }
+
+    // ADC para pot directo GP26
     adc_init();
     adc_gpio_init(PIN_POT);
     adc_select_input(0);
 
-    CapPadHandler pads;
-    pads.init(PRESET_PCB());
-    sleep_ms(50);
-    pads.calibrate();
-
+    // Calibración: LED ON durante ~3s
+    gpio_put(PIN_LED, 1);
+    sleep_ms(30);
+    calibrate_pads();
     gpio_put(PIN_LED, 0);
+
     g_ready = true;
 
     float pot_s = float(adc_read()) / 4095.0f;
-    bool prev[7] = {};
     uint8_t zone  = 1;
     uint8_t morph = 128;
     uint8_t rate  = 128;
@@ -134,44 +214,36 @@ void core1_entry() {
         pot_s += 0.12f * (float(adc_read()) / 4095.0f - pot_s);
         g_macro = pot_s;
 
-        pads.scan();
+        scan_pads();
 
-        bool cur[7];
-        for (int i = 0; i < 7; ++i) cur[i] = pads.is_pressed(i);
+        // Pad 0 (GP8, SNAP): randomize bytebeat
+        if (just_pressed(0)) {
+            g_randomize = true;
+            gpio_put(PIN_LED, 1);
+        }
+        if (!g_pads.pressed[0]) gpio_put(PIN_LED, 0);
 
-        // Pad 0: randomize
-        if (cur[0] && !prev[0]) { g_randomize = true; gpio_put(PIN_LED, 1); }
-        if (!cur[0] && prev[0]) gpio_put(PIN_LED, 0);
+        // Pad 1 (GP9, KICK): kick drum
+        if (just_pressed(1)) g_drum_trig |= 1u;
 
-        // Drums
-        if (cur[1] && !prev[1]) g_drum_trig |= 1u;
-        if (cur[2] && !prev[2]) g_drum_trig |= 2u;
-        if (cur[3] && !prev[3]) g_drum_trig |= 4u;
+        // Pad 2 (GP13, SNARE): snare
+        if (just_pressed(2)) g_drum_trig |= 2u;
 
-        // Zona
-        if (cur[4] && !prev[4]) {
+        // Pad 3 (GP14, HAT): hat + cambia zona
+        if (just_pressed(3)) {
+            g_drum_trig |= 4u;
             zone = (uint8_t)((zone + 1u) % 5u);
-            g_zone = zone; g_zone_changed = true;
-        }
-        // Morph
-        if (cur[5] && !prev[5]) {
-            morph += 32u;
-            g_morph = morph; g_morph_changed = true;
-        }
-        // Rate
-        if (cur[6] && !prev[6]) {
-            rate += 24u;
-            g_rate = rate; g_rate_changed = true;
+            g_zone = zone;
+            g_zone_changed = true;
         }
 
-        for (int i = 0; i < 7; ++i) prev[i] = cur[i];
         sleep_ms(1);
     }
 }
 
 } // namespace
 
-// ── Core0: audio ─────────────────────────────────────────────────
+// ── Core0: audio tight loop ──────────────────────────────────────
 int main() {
     set_sys_clock_khz(125000, true);
     stdio_init_all();
@@ -185,12 +257,11 @@ int main() {
     multicore_launch_core1(core1_entry);
     while (!g_ready) i2s_write(0, 0);
 
-    // ── BytebeatGraph ─────────────────────────────────────────────
+    // BytebeatGraph
     BytebeatGraph graph;
     uint8_t zone = 1;
     graph.generate(rng_next() ^ 0xDEADBEEFu, zone, make_zone(zone));
 
-    // EvalContext — se actualiza cada 32 samples (control rate)
     EvalContext ctx{};
     ctx.t                = 0;
     ctx.macro            = 0.5f;
@@ -208,13 +279,11 @@ int main() {
     ctx.breath_amount    = 0.0f;
     ctx.harmonic_blend   = 0.5f;
 
-    uint32_t cr_ctr = 0;
+    uint32_t cr = 0;
 
     while (true) {
-        // Control rate: cada 32 samples
-        if (++cr_ctr >= 32u) {
-            cr_ctr = 0;
-
+        if (++cr >= 32u) {
+            cr = 0;
             ctx.macro = g_macro;
 
             if (g_randomize) {
@@ -247,11 +316,11 @@ int main() {
             }
         }
 
-        // Audio sample
         ctx.t++;
         int16_t synth = graph.evaluate(ctx);
 
-        int32_t out = (int32_t)synth
+        // Drums más audibles: mezclar con ganancia balanceada
+        int32_t out = ((int32_t)synth >> 1)    // synth a -6dB
                     + (int32_t)proc_kick()
                     + (int32_t)proc_snare()
                     + (int32_t)proc_hat();
