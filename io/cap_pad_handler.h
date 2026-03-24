@@ -33,7 +33,9 @@ public:
     bool is_pressed(uint8_t pad) const;
     bool just_pressed(uint8_t pad) const;
     bool just_released(uint8_t pad) const;
-    uint16_t get_state() const { return state_confirmed_; }
+    uint16_t get_state()               const { return state_confirmed_; }
+    uint32_t get_raw_us(uint8_t pad)   const { return (pad < NUM_PADS) ? raw_us_[pad] : 0u; }
+    uint32_t get_baseline_us(uint8_t p) const { return (p < NUM_PADS) ? (uint32_t)baseline_f_[p] : 0u; }
     float get_pressure(uint8_t pad) const;
 
 private:
