@@ -174,7 +174,7 @@ void StateManager::sanitize_snapshot(Snapshot& s, uint8_t slot_hint) {
     s.shift = (s.shift > 7u) ? 7u : s.shift;
 }
 
-void StateManager::apply_snapshot_engine_to_graph(BytebeatGraph& graph, const Snapshot& s) {
+void StateManager::apply_snapshot_engine_to_graph(BytebeatGraph& graph, const Snapshot& s) const {
     graph.set_formula_a(s.formula_a);
     graph.set_formula_b(s.formula_b);
     graph.set_morph(s.morph);
