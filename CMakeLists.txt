@@ -7,14 +7,9 @@ pico_sdk_init()
 
 add_executable(demobyte_v3
     main.cpp
-    synth/bytebeat_graph.cpp
 )
 pico_generate_pio_header(demobyte_v3 ${CMAKE_CURRENT_LIST_DIR}/pcm5102_i2s.pio)
-target_include_directories(demobyte_v3 PRIVATE
-    ${CMAKE_CURRENT_LIST_DIR}
-    ${CMAKE_CURRENT_LIST_DIR}/synth
-    ${CMAKE_CURRENT_LIST_DIR}/utils
-)
+target_include_directories(demobyte_v3 PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 target_link_libraries(demobyte_v3
     pico_stdlib pico_multicore hardware_pio
     hardware_clocks hardware_adc hardware_timer
