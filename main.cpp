@@ -1,329 +1,437 @@
-// main.cpp — BYT3 V4.0
+// main.cpp — Bytebeat Machine V1.21 / Build v42
+// Core0: audio engine (bytebeat + lead + drums + DSP)
+// Core1: inputs + sequencer + encoder + flash + MIDI
 //
-// Motor bytebeat propio — sin envelope interna, sin AGC, sonido sostenido.
-// Usa las 17 fórmulas exactas del stage11 BytebeatGraph.
-// Agrega: filtro LP (pot controla cutoff), DC blocker, morph A↔B.
+// BOOT
+//   Carga snapshots desde flash automáticamente.
 //
-// PADS:
-//   GP8  (pad 0) → nueva fórmula aleatoria (LED)
-//   GP9  (pad 1) → kick drum
-//   GP13 (pad 2) → snare
-//   GP14 (pad 3) → hat + cambia zona (0=melódico→4=caos)
+// SAVE
+//   SHIFT + REC + PLAY
 //
-// POT: cutoff del filtro LP (grave→agudo)
+// ENCODER MODES
+//   BPM / SWING / ROOT / SCALE / MUTATE
+//
+// POTS (NORMAL)
+//   P0 Macro      P1 Tonal      P2 Drive
+//   P3 EnvAttack  P4 EnvRelease P5 Glide       P6 DelayDiv
+//
+// POTS (SHIFT)
+//   P0 Spread     P1 TimeDiv    P2 BeatRptDiv
+//   P3 Grain      P4 SnapGate   P5 HP Filter   P6 DelayFB
+//
+// POTS (SHIFT + REC)
+//   P0 ReverbRoom P1 ReverbWet  P2 Chorus
+//   P3 DrumDecay  P4 DrumColor  P5 DuckAmount  P6 DelayWet
+//
+// PERFORMANCE PADS
+//   SHIFT + PLAY            -> toggle Note Mode
+//   SHIFT + C/F/A/D/G/B/E   -> punch FX
+//   SHIFT + H               -> snapshot arp
+//   MUTE + KICK/SNARE/HAT   -> mute por drum
+//   SHIFT + KICK + SNARE    -> randomize / mutate global
+//
+// PINOUT:
+//   GP0      MIDI OUT (UART0 TX) via BC547 + 220Ω
+//   GP1      MIDI IN  (UART0 RX) via 6N138 (pin8 Vcc→3V3 requerido)
+//   GP2/3/4  MUX S0/S1/S2  (74HC4051)
+//   GP5/6/7  ROW 0/1/2     (pad capacitivo drive, via 1MOhm)
+//   GP8/9/13/14/15  COL 0-4 (pad sense, sin pull)
+//   GP10     I2S BCK  -> PCM5102 BCK
+//   GP11     I2S LRCK -> PCM5102 LCK/WS
+//   GP12     I2S DIN  -> PCM5102 DIN
+//   GP16     CLOCK IN  (10kΩ serie + clamp BAT43)
+//   GP17     CLOCK OUT (470Ω serie)
+//   GP18     OUTPUT MODE SW (pull-up, LOW=SPLIT, HIGH=MASTER)
+//   GP26     ADC0 (mux COM del 74HC4051)
+//   GP27     OLED SDA (SSD1306 I2C)
+//   GP28     OLED SCL (SSD1306 I2C)
+//
+// NOTA: UART0 (GP0/GP1) = MIDI. Debug solo por USB (stdio_uart=0 en cmake).
+// PAGE FEEDBACK: los modos del encoder se muestran en la barra WS2812
+// durante 1 segundo al cambiar de página; no hay LED RGB dedicado.
+// OLED: SSD1306 128x32 sobre I2C hardware (GPIO27/28).
+//
+// AUDIO BACKEND: por default se usa PCM5102 por I2S (PIO).
 
-#include <cstdint>
-#include <cstdio>
 #include "pico/stdlib.h"
+
 #include "pico/multicore.h"
-#include "hardware/pio.h"
-#include "hardware/adc.h"
-#include "hardware/timer.h"
 #include "hardware/clocks.h"
-#include "pcm5102_i2s.pio.h"
+#include "audio/audio_engine.h"
+#include "audio/audio_output_i2s.h"
+#include "audio/audio_output_pwm.h"
+#include "io/cap_pad_handler.h"
+#include "io/adc_handler.h"
+#include "io/input_router.h"
+#include "state/state_manager.h"
+#include "state/flash_store.h"
+#include "sequencer/sequencer.h"
+#include "sequencer/clock_in.h"
+#include "sequencer/clock_out.h"
+#include "midi/uart_midi.h"
+#include "midi/midi_router.h"
+#include "utils/ring_buffer.h"
+#include "utils/debug_log.h"
+#include "led/led_controller.h"
+#include "ui/oled_display.h"
+#include "ui/ui_renderer.h"
+#include "sequencer/event_types.h"
 
-namespace {
+// ── Heartbeat de prueba (quitar cuando el hardware esté listo) ──
+#ifdef NO_PAD_HARDWARE
+#define HEARTBEAT_PIN PIN_ONBOARD_LED
+#endif
 
-constexpr uint PIN_ROW    = 5;
-constexpr uint PIN_COL[4] = {8, 9, 13, 14};
-constexpr uint PIN_LED    = 25;
-constexpr uint PIN_POT    = 26;
-constexpr uint PIN_BCLK   = 10;
-constexpr uint PIN_DIN    = 12;
+// ── Compartido Core0/Core1 ────────────────────────────────────
+static RingBuffer<SequencerEvent, 128> g_event_queue;
+static StateManager                   g_state;
 
-static PIO  g_pio;
-static uint g_sm;
-static inline void i2s_write(int16_t l, int16_t r) {
-    pio_sm_put_blocking(g_pio, g_sm, (uint32_t)(uint16_t)l << 16);
-    pio_sm_put_blocking(g_pio, g_sm, (uint32_t)(uint16_t)r << 16);
-}
+// ── Core0 ─────────────────────────────────────────────────────
+static AudioOutputI2S  g_audio_out;
+// Fallback rápido para bring-up analógico:
+// static AudioOutputPWM  g_audio_out;
+static AudioEngine     g_audio_engine;
 
-// ── Shared state ──────────────────────────────────────────────────
-volatile float   g_pot       = 0.5f;
-volatile uint8_t g_pad_event = 0;   // bits: 0=new_bb, 1=kick, 2=snare, 3=hat+zone
-volatile bool    g_ready     = false;
+// ── Core1 ─────────────────────────────────────────────────────
+static CapPadHandler   g_pads;
+static AdcHandler      g_adc;
+static InputRouter     g_router;
+static Sequencer       g_seq;
+static ClockIn         g_clock_in;
+static ClockOut        g_clock_out;
+static float           g_int_bpm = 120.0f;  // BPM interno antes de sync EXT
+static UartMidi        g_midi;
+static MidiRouter      g_midi_router;
+static LedController   g_leds;
+static OledDisplay     g_oled;
+static UiRenderer      g_ui;
 
-// ── RNG ───────────────────────────────────────────────────────────
-static uint32_t g_rng = 0xDEADBEEFu;
-static inline uint32_t rng_next() {
-    g_rng ^= g_rng << 13; g_rng ^= g_rng >> 17; g_rng ^= g_rng << 5;
-    return g_rng;
-}
-static inline uint8_t rng_u8() { return (uint8_t)(rng_next() >> 24); }
+// Output routing switch: HIGH = master stereo, LOW = split synth/drums
+static constexpr uint OUTPUT_MODE_PIN = 18;
+static bool g_split_output_stable = false;
+static uint8_t g_split_output_integrator = 0;
+static constexpr uint8_t OUTPUT_SWITCH_DEBOUNCE_MAX = 8u;
 
-// ── Las 17 fórmulas del stage11 ───────────────────────────────────
-static inline uint8_t formula(uint8_t id, uint32_t t, uint8_t seed) {
-    const uint8_t s = seed;
-    switch (id % 17u) {
-    case 0:  return (uint8_t)(t * ((((t>>10)&42u) & 0xFFu) ? (((t>>10)&42u) & 0xFFu) : 1u));
-    case 1:  return (uint8_t)(t * ((((t>>9)^(t>>11)) & 28u) + 4u));
-    case 2:  return (uint8_t)(t * ((((t>>8)&15u)^((t>>11)&7u)) + 3u));
-    case 3:  return (uint8_t)(t * ((((t>>10)&5u)|((t>>13)&2u)) + 2u));
-    case 4:  return (uint8_t)(t & (t>>8));
-    case 5:  return (uint8_t)(((t*5u)&(t>>7)) | ((t*3u)&(t>>10)));
-    case 6:  return (uint8_t)(((t>>6)|(t*3u)) & ((t>>9)|(t*5u)));
-    case 7:  return (uint8_t)(((t>>5)&(t>>8)) | ((t>>3)&(t*2u)));
-    case 8:  return (uint8_t)(((t>>4)&(t>>7)) * ((255u-(t>>6))&255u));
-    case 9:  return (uint8_t)(((t*(9u+(s&1u)))&(t>>4)) ^ ((t*(5u+((s>>1)&1u)))&(t>>7)));
-    case 10: return (uint8_t)((t>>2)^(t>>5)^(t>>7));
-    case 11: return (uint8_t)((t*((t>>9)&3u))&(t>>5));
-    case 12: return (uint8_t)(t^(t>>3)^(t>>6));
-    case 13: return (uint8_t)((t*(t>>9))^(t>>7)^(t>>13));
-    case 14: return (uint8_t)(((t*7u)&(t>>9)) ^ ((t*11u)&(t>>11)));
-    case 15: return (uint8_t)((t*((((t>>10)&21u)+3u))) | ((t>>7)&(t>>9)));
-    case 16: return (uint8_t)(((t*((((t>>11)&13u)+2u))) ^ ((t*5u)&(t>>8))));
-    default: return (uint8_t)t;
-    }
-}
-
-// ── Motor bytebeat propio ─────────────────────────────────────────
-struct BB {
-    uint8_t  fa    = 2;    // fórmula A
-    uint8_t  fb    = 10;   // fórmula B
-    uint8_t  morph = 128;  // mezcla A↔B (0=100%A, 255=100%B)
-    uint16_t rate  = 1;    // divisor de t (1=normal, 2=mitad de velocidad)
-    uint8_t  seed  = 0;
-    int32_t  lp    = 0;    // LP state
-    int32_t  dcx   = 0;    // DC blocker
-    int32_t  dcy   = 0;
-
-    // Crossfade hacia nueva fórmula
-    uint8_t  fa_prev = 2, fb_prev = 10;
-    int32_t  xfade   = 256;  // 256=100% new, 0=100% prev (xfade en progreso si <256)
-
-    void randomize(uint8_t zone) {
-        fa_prev = fa; fb_prev = fb;
-        // Zona 0-1: fórmulas melódicas (0-3, 10, 11, 15)
-        // Zona 2-3: neutrales (4-7, 12)
-        // Zona 4:   caos (8,9,13,14,16)
-        static const uint8_t melodic[]  = {0,1,2,3,10,11,15};
-        static const uint8_t neutral[]  = {4,5,6,7,10,12};
-        static const uint8_t chaos[]    = {8,9,13,14,16,5,7};
-        const uint8_t* pool = (zone <= 1) ? melodic : (zone <= 3) ? neutral : chaos;
-        const uint8_t  pool_sz = (zone <= 1) ? 7 : (zone <= 3) ? 6 : 7;
-        fa   = pool[rng_next() % pool_sz];
-        fb   = pool[rng_next() % pool_sz];
-        morph = rng_u8();
-        rate  = 1 + (rng_next() % 3u);  // 1, 2, o 3
-        seed  = rng_u8();
-        xfade = 0;  // empieza crossfade desde prev hacia new
+static bool update_output_mode_switch_debounced() {
+    const bool raw_split = (gpio_get(OUTPUT_MODE_PIN) == 0);
+    if (raw_split) {
+        if (g_split_output_integrator < OUTPUT_SWITCH_DEBOUNCE_MAX) ++g_split_output_integrator;
+    } else {
+        if (g_split_output_integrator > 0) --g_split_output_integrator;
     }
 
-    int16_t next(uint32_t t, float cutoff) {
-        const uint32_t ts = t / (rate ? rate : 1);
-
-        // Evaluar fórmulas
-        uint8_t va = formula(fa, ts, seed);
-        uint8_t vb = formula(fb, ts ^ (seed * 0x55u), seed ^ 0xA5u);
-
-        // Crossfade entre prev y new si está activo
-        if (xfade < 256) {
-            const uint8_t pa = formula(fa_prev, ts, seed);
-            const uint8_t pb = formula(fb_prev, ts ^ (seed*0x55u), seed^0xA5u);
-            const uint8_t prev_mix = (uint8_t)(((uint16_t)pa*(255u-morph)
-                                               + (uint16_t)pb*morph) >> 8);
-            const uint8_t new_mix  = (uint8_t)(((uint16_t)va*(255u-morph)
-                                               + (uint16_t)vb*morph) >> 8);
-            // xfade 0→256 over 2048 samples
-            const uint8_t out_raw = (uint8_t)(((uint32_t)prev_mix*(256-xfade)
-                                              + (uint32_t)new_mix*xfade) >> 8);
-            xfade += 1; // full crossfade in 256 samples = 5.8ms
-            va = out_raw; vb = out_raw; // bypass morph mix below
-        }
-
-        // Morph A↔B
-        const uint8_t raw = (xfade >= 256)
-            ? (uint8_t)(((uint16_t)va*(255u-morph) + (uint16_t)vb*morph) >> 8)
-            : va;  // already mixed above
-
-        // Centrar en 0 y escalar a 16-bit
-        int16_t s = (int16_t)((int)(raw) - 128) << 8;
-
-        // Filtro LP: cutoff 0..1 → coeff
-        // cutoff=0.0 → coeff=0.02 (muy cerrado, muy grave)
-        // cutoff=1.0 → coeff=0.95 (casi abierto, casi sin filtro)
-        const float coeff = 0.02f + cutoff * 0.93f;
-        lp += (int32_t)((float)((int32_t)s - lp) * coeff);
-        s = (int16_t)(lp >> 0);
-
-        // DC blocker
-        const int32_t y = (int32_t)s - dcx + ((dcy * 252) >> 8);
-        dcx = (int32_t)s;
-        dcy = y;
-        s = (int16_t)(y < -32767 ? -32767 : y > 32767 ? 32767 : y);
-
-        return s;
+    const bool prev = g_split_output_stable;
+    if (g_split_output_integrator == 0u) {
+        g_split_output_stable = false;
+    } else if (g_split_output_integrator >= OUTPUT_SWITCH_DEBOUNCE_MAX) {
+        g_split_output_stable = true;
+        g_split_output_integrator = OUTPUT_SWITCH_DEBOUNCE_MAX;
     }
-};
+    return prev != g_split_output_stable;
+}
 
-static BB g_bb;
 
-// ── Pad sensing ───────────────────────────────────────────────────
-constexpr uint32_t DISCHARGE_US = 50000;
-constexpr uint32_t MAX_US       = 200000;
+static repeating_timer_t g_pad_timer;
+static repeating_timer_t g_adc_timer;
 
-static float pad_base[4] = {};
-static bool  pad_on[4]   = {};
-static bool  pad_prev[4] = {};
+static bool pad_timer_cb(repeating_timer_t*) { g_pads.scan(); return true; }
+static bool adc_timer_cb(repeating_timer_t*) { g_adc.poll();  return true; }
 
-static uint32_t measure_pad(uint8_t c) {
-    gpio_put(PIN_ROW, 0);
-    sleep_us(DISCHARGE_US);
-    const uint32_t t0 = time_us_32();
-    gpio_put(PIN_ROW, 1);
-    while (!gpio_get(PIN_COL[c])) {
-        if ((time_us_32() - t0) >= MAX_US) {
-            gpio_put(PIN_ROW, 0);
-            return MAX_US;
-        }
+// ── Flash save: SHIFT + REC + PLAY ───────────────────────────
+// Gesto: mantener SHIFT y REC, y luego presionar PLAY para guardar a flash.
+// Esto evita conflicto con la capa 2 de pots (SHIFT+REC held) y reemplaza
+// el viejo triple-tap de REC.
+static bool save_combo_prev_ = false;
+static bool save_combo_fired_ = false;
+static uint32_t save_combo_start_ms_ = 0;
+static constexpr uint32_t SAVE_GUARD_MS = 700u;
+
+static void check_flash_save(bool shift, bool rec, bool play) {
+    const bool save_combo = shift && rec && play;
+    const uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    if (save_combo && !save_combo_prev_) {
+        save_combo_start_ms_ = now_ms;
+        save_combo_fired_ = false;
+        g_leds.on_action(ActionFeedback::SAVE_ARM);
     }
-    const uint32_t dt = time_us_32() - t0;
-    gpio_put(PIN_ROW, 0);
-    return dt;
-}
-
-static void calibrate_pads() {
-    gpio_put(PIN_ROW, 0); sleep_ms(100);
-    for (uint8_t c = 0; c < 4; ++c) {
-        uint64_t sum = 0;
-        for (int s = 0; s < 20; ++s) sum += measure_pad(c);
-        pad_base[c] = float(sum / 20);
-        printf("pad%u base=%.0fus\n", c, (double)pad_base[c]);
+    if (save_combo && !save_combo_fired_ && (now_ms - save_combo_start_ms_) >= SAVE_GUARD_MS) {
+        bool ok = g_state.flash_save();
+        LOG("MAIN: flash save (SHIFT+REC+PLAY hold) %s", ok ? "OK" : "FAIL");
+        if (ok) g_leds.on_flash_save();
+        save_combo_fired_ = true;
     }
+    if (!save_combo) save_combo_fired_ = false;
+    save_combo_prev_ = save_combo;
 }
 
-static void scan_pads() {
-    for (uint8_t c = 0; c < 4; ++c) {
-        pad_prev[c] = pad_on[c];
-        const uint32_t raw = measure_pad(c);
-        const float d = (float)raw - pad_base[c];
-        const float on_th  = pad_base[c] * 0.15f;
-        const float off_th = pad_base[c] * 0.08f;
-        pad_on[c] = pad_on[c] ? (d >= off_th) : (d >= on_th);
-        if (!pad_on[c]) pad_base[c] += 0.01f * ((float)raw - pad_base[c]);
-    }
-}
+// ── Core1 entry point ─────────────────────────────────────────
+void core1_main() {
+    // Pads capacitivos
+    // Cambiar a Preset::STAGE() para entornos con humedad alta
+    g_pads.init(CapPadHandler::Preset::DRY());
+    g_pads.calibrate();  // ~1s — no tocar pads durante calibracion
 
-static inline bool just_pressed(uint8_t n) { return pad_on[n] && !pad_prev[n]; }
+    // Heartbeat: init pin GP22 como salida de prueba
+#ifdef NO_PAD_HARDWARE
+    gpio_init(HEARTBEAT_PIN);
+    gpio_set_dir(HEARTBEAT_PIN, GPIO_OUT);
+    gpio_put(HEARTBEAT_PIN, 0);
+#endif
 
-// ── Drums ─────────────────────────────────────────────────────────
-static uint32_t kick_ph = 0, kick_env = 0;
-static uint32_t s_rng = 0xABCDu, snare_env = 0;
-static uint32_t hat_env = 0;
-static int32_t  duck = 256;
+    g_adc.init();
+    g_clock_in.init();
+    g_clock_out.init();
+    g_leds.init();
+    g_oled.init();
+    g_ui.init(&g_oled);
 
-static void trig_kick()  { kick_env  = 0xFFFFu; kick_ph = 0; duck = 48; }
-static void trig_snare() { snare_env = 0xFFFFu; s_rng = rng_next(); if(duck>80) duck=80; }
-static void trig_hat()   { hat_env   = 0x6000u; if(duck>160) duck=160; }
+    gpio_init(OUTPUT_MODE_PIN);
+    gpio_set_dir(OUTPUT_MODE_PIN, GPIO_IN);
+    gpio_pull_up(OUTPUT_MODE_PIN);
+    sleep_us(50);
+    g_split_output_stable = (gpio_get(OUTPUT_MODE_PIN) == 0);
+    g_split_output_integrator = g_split_output_stable ? OUTPUT_SWITCH_DEBOUNCE_MAX : 0u;
+    g_seq.set_clock_out(&g_clock_out);
+    // Publish sequencer transport/step state to the shared state manager.
+    g_seq.set_state_manager(&g_state);
+    g_seq.init();
 
-static inline int16_t proc_kick() {
-    if (!kick_env) return 0;
-    kick_ph += 0x9000000u - (kick_env << 9);
-    int16_t s = (int16_t)((((kick_ph>>31)?28000:-28000)*(int32_t)kick_env)>>16);
-    kick_env = kick_env>150u ? kick_env-150u : 0u;
-    return s;
-}
-static inline int16_t proc_snare() {
-    if (!snare_env) return 0;
-    s_rng^=s_rng<<7; s_rng^=s_rng>>9; s_rng^=s_rng<<8;
-    int16_t s = (int16_t)(((int32_t)(int16_t)s_rng*(int32_t)snare_env)>>16);
-    snare_env = snare_env>100u ? snare_env-100u : 0u;
-    return s;
-}
-static inline int16_t proc_hat() {
-    if (!hat_env) return 0;
-    uint32_t h = hat_env*0x9E3779B9u;
-    int16_t s = (int16_t)(((int32_t)(int16_t)h*(int32_t)hat_env)>>16);
-    hat_env = hat_env>600u ? hat_env-600u : 0u;
-    return s;
-}
+    // Aftertouch: elegir opcion
+    //   STUTTER_DEPTH = PAD_STUTTER controla stutter depth + rate
+    //   DSP_DRIVE     = cualquier pad controla drive del clipper
+    //   MACRO_MORPH   = pads 0-7 morphean macro momentaneamente
+    g_router.aftertouch_mode = AftertouchMode::STUTTER_DEPTH;
+    g_router.midi       = &g_midi;   // V1.7: Note Mode MIDI output
+    g_router.led_ctrl    = &g_leds;   // LED feedback
+    g_router.ui_renderer = &g_ui;
 
-// ── Core1 ─────────────────────────────────────────────────────────
-void core1_entry() {
-    gpio_init(PIN_LED); gpio_set_dir(PIN_LED, GPIO_OUT);
-    gpio_init(PIN_ROW); gpio_set_dir(PIN_ROW, GPIO_OUT); gpio_put(PIN_ROW, 0);
-    for (uint8_t c = 0; c < 4; ++c) {
-        gpio_init(PIN_COL[c]); gpio_set_dir(PIN_COL[c], GPIO_IN);
-        gpio_disable_pulls(PIN_COL[c]);
-    }
-    adc_init(); adc_gpio_init(PIN_POT); adc_select_input(0);
+    // Timers: 5ms para pads (scan RC capacitivo), 2ms para ADC
+    add_repeating_timer_ms(-5, pad_timer_cb, nullptr, &g_pad_timer);
+    add_repeating_timer_ms(-2, adc_timer_cb, nullptr, &g_adc_timer);
 
-    gpio_put(PIN_LED, 1);
-    calibrate_pads();
-    gpio_put(PIN_LED, 0);
-    g_ready = true;
+    // MIDI: configuracion por defecto
+    MidiConfig midi_cfg = {};
+    midi_cfg.rx_channel       = 1;     // escuchar canal 1 (0 = omni)
+    midi_cfg.tx_channel       = 1;
+    // CC IN: pots 0-6 controlables por CC (layout actual de 7 pots)
+    midi_cfg.cc_map[0]        = 74;    // Macro
+    midi_cfg.cc_map[1]        = 71;    // Tonal
+    midi_cfg.cc_map[2]        = 72;    // Drive
+    midi_cfg.cc_map[3]        = 73;    // Env attack
+    midi_cfg.cc_map[4]        = 75;    // Env release
+    midi_cfg.cc_map[5]        = 76;    // Glide
+    midi_cfg.cc_map[6]        = 77;    // Delay div
+    // Note IN: notas C2-G2 disparan snapshots A-H
+    for (uint8_t i = 0; i < 8; i++)
+        midi_cfg.note_map[i]  = 36 + i;  // C2=36..G2=43
+    // CC OUT: reflejar pots 0-6 como CC
+    midi_cfg.cc_out_enable    = true;
+    for (uint8_t i = 0; i < 7; i++)
+        midi_cfg.cc_out_map[i] = midi_cfg.cc_map[i];
+    // Clock I/O
+    midi_cfg.clock_out_enable = true;
+    midi_cfg.clock_in_enable  = true;
 
-    float pot_s = float(adc_read()) / 4095.0f;
-    uint8_t zone = 0;  // zona 0 = melódico por default
+    g_midi.init(midi_cfg);
+    g_midi_router.init(&g_midi, midi_cfg);
+
+    ClockSource last_src      = ClockSource::INT;
+    uint32_t    last_seq_tick = 0;
 
     while (true) {
-        pot_s += 0.12f * (float(adc_read())/4095.0f - pot_s);
-        g_pot = pot_s;
-        scan_pads();
+        const uint64_t loop_start_us = time_us_64();
+        uint64_t now_us = loop_start_us;
+        uint32_t now_ms = to_ms_since_boot(get_absolute_time());
 
-        if (just_pressed(0)) { g_pad_event |= 1u; gpio_put(PIN_LED,1); }
-        if (!pad_on[0])        gpio_put(PIN_LED, 0);
-        if (just_pressed(1))   g_pad_event |= 2u;
-        if (just_pressed(2))   g_pad_event |= 4u;
-        if (just_pressed(3)) {
-            zone = (uint8_t)((zone + 1u) % 5u);
-            g_pad_event |= 8u;
+        // Clock In — auto-detect EXT/INT
+        g_clock_in.update();
+        ClockSource desired = g_clock_in.is_ext_sync()
+                              ? ClockSource::EXT : ClockSource::INT;
+        if (desired != last_src) {
+            g_seq.set_clock_source(desired);
+            last_src = desired;
+            if (desired == ClockSource::INT) {
+                // Volvemos a clock interno: restaurar el BPM que tenía el
+                // usuario antes de que entrara la señal externa. Sin esto,
+                // el secuenciador quedaría corriendo al último BPM EXT.
+                g_seq.set_bpm(g_int_bpm);
+                LOG("MAIN: clock -> INT | BPM restored=%.1f", g_int_bpm);
+            } else {
+                LOG("MAIN: clock -> EXT");
+            }
+        }
+        if (desired == ClockSource::INT) {
+            // Trackear el BPM interno para poder restaurarlo al salir de EXT.
+            // Se actualiza solo cuando el encoder cambia el BPM (a través del
+            // estado del sequencer), no en cada loop para no generar overhead.
+            const float seq_bpm = g_seq.get_bpm();
+            if (seq_bpm != g_int_bpm) g_int_bpm = seq_bpm;
+        }
+        if (desired == ClockSource::EXT) {
+            while (g_clock_in.consume_tick()) {
+                g_seq.set_bpm(g_clock_in.get_bpm());
+                g_seq.on_ext_tick();
+            }
+        }
+
+        g_seq.update_int(now_us);
+        g_seq.tick(g_event_queue);
+        g_clock_out.update();
+
+        // MIDI clock out: emitir en cada tick del sequencer (24 PPQN)
+        uint32_t cur_tick = g_seq.current_tick();
+        if (cur_tick != last_seq_tick) {
+            g_midi_router.on_clock_tick(g_midi);
+            last_seq_tick = cur_tick;
+        }
+
+        // MIDI clock out: comparar tick actual con el ultimo enviado
+        // Sequencer avanza en update_int(); comparar tick para emitir clock
+
+        // Input: pads + pots -> eventos + cambios de estado
+        g_router.process(g_pads, g_adc, g_seq, g_state, g_event_queue);
+
+        // ── CV IN (CH6 del MUX) ───────────────────────────────────
+        // Si hay señal CV presente, modula el Macro del snapshot activo.
+        // Esto es aditivio: suma al valor actual del pot, clampeado a 1.0.
+        // Comportamiento: CV corta → poco efecto; CV alta → macro al máximo.
+        // El usuario puede deshabilitar el efecto poniendo el pot MACRO en 0.
+        if (g_adc.cv_active()) {
+            const float cv  = g_adc.get_cv();
+            const float pot = g_adc.get(0);  // pot 0 = MACRO en capa normal
+            const float combined = pot + cv * (1.0f - pot);  // aditivo con clamp implícito
+            g_state.set_patch_param(PARAM_MACRO,
+                combined > 1.0f ? 1.0f : combined);
+        }
+
+        // Flash save gesture + LED feedback
+        bool shift_held = g_pads.is_pressed(PAD_SHIFT);
+        bool rec_held   = g_pads.is_pressed(PAD_REC);
+        bool play_held  = g_pads.is_pressed(PAD_PLAY);
+        check_flash_save(shift_held, rec_held, play_held);
+
+        const bool output_mode_changed = update_output_mode_switch_debounced();
+        const bool split_output = g_split_output_stable;
+        g_audio_engine.set_output_mode(split_output ? AudioEngine::OUTPUT_SPLIT
+                                                    : AudioEngine::OUTPUT_MASTER);
+        if (output_mode_changed) {
+            g_ui.show_action_message(split_output ? "OUT SPLIT" : "OUT MASTER");
+        }
+
+        // ── LED Controller ─────────────────────────────────────────
+        // update() cada iteración del loop (~100µs → ~10kHz, pero
+        // flush() al PIO solo ocurre cuando dirty_=true, así que
+        // el overhead real es mínimo).
+        {
+            PlayState ps = g_seq.play_state();
+            bool playing = (ps == PlayState::PLAYING || ps == PlayState::RECORDING);
+            bool is_rec  = (ps == PlayState::RECORDING);
+            const bool seq_view = g_seq.has_sequence() || g_seq.is_step_write_mode();
+            const uint8_t page_base = g_seq.visible_page_base();
+            uint8_t page_snap_mask = 0;
+            uint8_t page_note_mask = 0;
+            uint8_t page_drum_mask = 0;
+            uint8_t page_motion_mask = 0;
+            for (uint8_t i = 0; i < 8; ++i) {
+                const uint8_t step = (uint8_t)(page_base + i);
+                if (g_seq.step_has_snapshot(step)) page_snap_mask |= (1u << i);
+                if (g_seq.step_has_note(step))     page_note_mask |= (1u << i);
+                if (g_seq.step_has_drum(step))     page_drum_mask |= (1u << i);
+                if (g_seq.step_has_motion(step))   page_motion_mask |= (1u << i);
+            }
+            const uint8_t playhead_step = g_seq.is_step_write_mode()
+                                            ? g_seq.current_write_step_index()
+                                            : g_seq.last_emitted_step_index();
+            uint8_t snapshot_valid_mask = 0u;
+            uint8_t snapshot_mute_mask  = 0u;
+            const Snapshot* snaps = g_state.get_snapshots();
+            for (uint8_t i = 0; i < StateManager::NUM_SNAPSHOTS; ++i) {
+                if (snaps[i].valid) snapshot_valid_mask |= (uint8_t)(1u << i);
+                if (g_state.get_mute_snap(i)) snapshot_mute_mask |= (uint8_t)(1u << i);
+            }
+            g_leds.update(g_seq.current_tick(),
+                          g_state.get_active_slot(),
+                          playing,
+                          is_rec,
+                          shift_held,
+                          g_router.is_shift_rec_active(),
+                          g_state.is_note_mode(),
+                          g_state.get_env_loop(),
+                          snapshot_valid_mask,
+                          snapshot_mute_mask,
+                          seq_view,
+                          g_seq.sequence_length(),
+                          page_base,
+                          playhead_step,
+                          g_seq.current_write_step_index(),
+                          page_snap_mask,
+                          page_note_mask,
+                          page_drum_mask,
+                          page_motion_mask,
+                          g_seq.is_step_write_mode(),
+                          g_seq.is_armed_record(),
+                          g_seq.preroll_steps_left());
+            g_ui.set_status(g_state.get_active_slot(),
+                            g_seq.get_bpm(),
+                            playing,
+                            is_rec,
+                            shift_held,
+                            g_router.is_shift_rec_active(),
+                            g_state.is_note_mode(),
+                            g_state.is_snapshot_morph_active(),
+                            split_output,
+                            g_state.get_encoder_state(),
+                            g_state.note_active(),
+                            g_state.note_degree(),
+                            g_state.note_midi(),
+                            g_state.note_voice_source());
+            g_ui.update(now_ms);
+        }
+
+        // MIDI: poll RX y traducir eventos entrantes
+        g_midi.poll_rx();
+        g_midi_router.process_in(g_midi, g_state, g_seq, g_event_queue);
+
+        // Heartbeat 1Hz: conmutar GP22 cada 500ms
+#ifdef NO_PAD_HARDWARE
+        if ((now_ms % 1000) < 500)
+            gpio_put(HEARTBEAT_PIN, 1);
+        else
+            gpio_put(HEARTBEAT_PIN, 0);
+#endif
+
+        // Sleep adaptativo: duerme lo que queda de un slot de 500µs.
+        // Garantiza que el loop corre al menos a 2kHz sin quemar CPU,
+        // pero si una iteración tardó más de 500µs no duerme nada.
+        // Reduce la latencia del encoder respecto al sleep fijo de 100µs
+        // porque la iteración completa no excede ese slot salvo bajo carga.
+        {
+            const uint64_t elapsed = time_us_64() - loop_start_us;
+            if (elapsed < 500u) sleep_us(500u - elapsed);
         }
     }
 }
 
-} // namespace
-
-// ── Core0: audio ─────────────────────────────────────────────────
+// ── Core0 entry point ─────────────────────────────────────────
 int main() {
     set_sys_clock_khz(125000, true);
     stdio_init_all();
+    sleep_ms(500);
+    LOG("=== Bytebeat Machine V1.21 / Build v42 ===");
 
-    g_pio = pio0;
-    const uint off = pio_add_program(g_pio, &pcm5102_i2s_program);
-    g_sm = pio_claim_unused_sm(g_pio, true);
-    pcm5102_i2s_program_init(g_pio, g_sm, off, PIN_DIN, PIN_BCLK, 44100);
-    for (int i = 0; i < 32; ++i) i2s_write(0, 0);
+    g_state.init();
+    LOG("MAIN: state init OK");
 
-    multicore_launch_core1(core1_entry);
-    while (!g_ready) i2s_write(0, 0);
+    g_audio_engine.init(&g_audio_out, &g_state);
+    g_audio_engine.set_event_queue(&g_event_queue);
 
-    // Fórmula inicial conocida que suena bien
-    g_bb.fa = 2; g_bb.fb = 10; g_bb.morph = 100;
-    g_bb.rate = 1; g_bb.seed = 42;
+    // Core0 debe registrarse como lockout victim para que
+    // FlashStore::save() pueda pausarlo durante escritura Flash
+    multicore_lockout_victim_init();
+    multicore_launch_core1(core1_main);
 
-    uint32_t t    = 0;
-    uint8_t  zone = 0;
-    uint32_t cr   = 0;
-
-    while (true) {
-        if (++cr >= 32u) {
-            cr = 0;
-            const uint8_t ev = g_pad_event;
-            if (ev) {
-                g_pad_event = 0;
-                if (ev & 1u) g_bb.randomize(zone);
-                if (ev & 2u) trig_kick();
-                if (ev & 4u) trig_snare();
-                if (ev & 8u) { zone=(uint8_t)((zone+1u)%5u); g_bb.randomize(zone); }
-            }
-            // Duck recovery
-            duck += (256 - duck) >> 4;
-            if (duck > 254) duck = 256;
-        }
-
-        // Bytebeat: pot controla el cutoff del LP
-        int16_t synth = g_bb.next(t, g_pot);
-        synth = (int16_t)((int32_t)synth * duck >> 8);
-
-        int32_t out = (int32_t)synth
-                    + (int32_t)proc_kick()
-                    + (int32_t)proc_snare()
-                    + (int32_t)proc_hat();
-        if (out >  32767) out =  32767;
-        if (out < -32768) out = -32768;
-
-        i2s_write((int16_t)out, (int16_t)out);
-        ++t;
-    }
+    LOG("Core0: audio @ %u Hz, BLOCK_SIZE=%u",
+        AudioEngine::SAMPLE_RATE, AudioEngine::BLOCK_SIZE);
+    g_audio_engine.run();  // nunca retorna
+    return 0;
 }

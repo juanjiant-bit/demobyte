@@ -12,6 +12,15 @@
 ;
 ; The extra "pull noblock" after each LRCK transition creates the
 ; mandatory 1-bit delay between LRCK edge and the first data bit.
+;
+; Channel format on the wire per slot:
+;   1 dummy bit after LRCK transition
+;   then 31 shifted bits from OSR
+;
+; With a left-aligned 16-bit sample inside a 32-bit word, the DAC sees:
+;   dummy + 16 valid bits + 15 zero padding bits
+;
+; This is the safest minimal Philips-I2S implementation for PCM5102.
 
 .wrap_target
 public entry_point:
@@ -40,6 +49,8 @@ static inline void pcm5102_i2s_program_init(PIO pio,
                                             uint pin_din,
                                             uint pin_bclk,
                                             uint sample_rate) {
+    // pin_bclk     -> BCLK  (sideset bit 0)
+    // pin_bclk + 1 -> LRCK  (sideset bit 1)
     pio_gpio_init(pio, pin_din);
     pio_gpio_init(pio, pin_bclk);
     pio_gpio_init(pio, pin_bclk + 1);
@@ -50,9 +61,13 @@ static inline void pcm5102_i2s_program_init(PIO pio,
     pio_sm_config c = pcm5102_i2s_program_get_default_config(offset);
     sm_config_set_out_pins(&c, pin_din, 1);
     sm_config_set_sideset_pins(&c, pin_bclk);
-    sm_config_set_out_shift(&c, false, true, 32);
+    sm_config_set_out_shift(&c, false, true, 32);  // shift left, autopull 32b, MSB-first on the wire
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
 
+    // Standard Philips I2S with 32-bit slots:
+    //   BCLK = sample_rate * 64
+    // This PIO emits one bit over two state-machine instructions,
+    // so SM frequency must be BCLK * 2 = sample_rate * 128.
     const float div = (float)clock_get_hz(clk_sys) / (float)(sample_rate * 128u);
     sm_config_set_clkdiv(&c, div);
 

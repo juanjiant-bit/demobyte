@@ -1,10 +1,14 @@
-name: Build RP2040
+name: Build Pico UF2
 
-on: [push, workflow_dispatch]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -13,20 +17,30 @@ jobs:
           sudo apt update
           sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential
 
-      - name: Clone Pico SDK
+      - name: Clone pico-sdk
         run: |
           git clone https://github.com/raspberrypi/pico-sdk.git --depth=1
-          cd pico-sdk && git submodule update --init
+          cd pico-sdk
+          git submodule update --init
 
-      - name: Build
+      - name: Set SDK path
+        run: echo "PICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk" >> $GITHUB_ENV
+
+      - name: Configure
         run: |
-          export PICO_SDK_PATH=$PWD/pico-sdk
-          mkdir build && cd build
-          cmake .. && make -j4
+          mkdir build
+          cd build
+          cmake .. -DPICO_BOARD=pico -DBYT3_MINIMAL_HW=ON
+
+      - name: Build minimal only
+        run: |
+          cd build
+          make bytebeat_machine_minimal -j4
 
       - name: Upload UF2
         uses: actions/upload-artifact@v4
         with:
-          name: demobyte-v3-uf2
-          path: build/*.uf2
-          if-no-files-found: error
+          name: uf2
+          path: |
+            build/*.uf2
+            build/**/*.uf2
