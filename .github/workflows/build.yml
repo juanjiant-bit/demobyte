@@ -1,56 +1,32 @@
-name: Build RP2040 Project
+name: Build RP2040
 
-on:
-  push:
-  workflow_dispatch:
+on: [push, workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y \
-            cmake \
-            gcc-arm-none-eabi \
-            libnewlib-arm-none-eabi \
-            build-essential
+          sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential
 
       - name: Clone Pico SDK
         run: |
           git clone https://github.com/raspberrypi/pico-sdk.git --depth=1
-          cd pico-sdk
-          git submodule update --init
-
-      - name: Set Pico SDK path
-        run: echo "PICO_SDK_PATH=${{ github.workspace }}/pico-sdk" >> $GITHUB_ENV
-
-      - name: Configure
-        run: |
-          mkdir -p build
-          cd build
-          cmake ..
+          cd pico-sdk && git submodule update --init
 
       - name: Build
         run: |
-          cd build
-          cmake --build . -j4
+          export PICO_SDK_PATH=$PWD/pico-sdk
+          mkdir build && cd build
+          cmake .. && make -j4
 
-      - name: List build outputs
-        run: |
-          echo "Build contents:"
-          find build -maxdepth 3 -type f | sort
-
-      - name: Upload UF2 artifact
+      - name: Upload UF2
         uses: actions/upload-artifact@v4
         with:
-          name: demobyte-i2s-pot-pads-uf2
-          path: |
-            build/*.uf2
-            build/**/*.uf2
+          name: demobyte-v3-uf2
+          path: build/*.uf2
           if-no-files-found: error
