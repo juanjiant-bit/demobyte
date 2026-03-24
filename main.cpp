@@ -1,14 +1,20 @@
-// main.cpp — BYT3 hardware test V3.2
+// main.cpp — BYT3 hardware test V3.3
 //
-// Pinout:
-//   GP5=ROW, GP8=SNAP(randomize), GP9=KICK, GP13=SNARE, GP14=HAT
+// PINOUT:
+//   GP5=ROW (drive) + 100nF a GND
+//   GP8=SNAP, GP9=KICK, GP13=SNARE, GP14=HAT (pads, COL)
+//   Circuito: GP5 --1MΩ-- PAD_COBRE -- GP_col
 //   GP26=POT, GP10=BCK, GP11=LCK, GP12=DIN, GP25=LED
 //
-// FIXES vs V3.1:
-//   - Pot ahora controla ctx.tonal (filtro LP→HP) — cambio muy audible
-//   - Drums con duck automático del bytebeat (-12dB, 200ms)
-//   - generate() con retry: descarta fórmulas silenciosas antes de usarlas
-//   - Bytebeat sin >>1: volumen completo, drums tienen espacio via duck
+// FIX DE PADS (análisis RC completo):
+//   Con 1MΩ y ~15pF de capacitancia de pista PCB:
+//     Sin dedo: ~10µs carga,  Con dedo (+50pF): ~43µs carga
+//     Delta esperado: ~33µs
+//     Discharge necesario: 95µs (5τ del cap de COL)
+//   Preset anterior tenía max_charge_us=1200 (100x demasiado)
+//   → todos los pads hacían timeout y baseline quedaba en 1200
+//   → cualquier lectura real era MENOR que el baseline → delta negativo
+//   → los pads aparecían siempre "presionados" (threshold invertido)
 
 #include <cstdint>
 #include <cmath>
@@ -33,22 +39,19 @@ constexpr uint PIN_DIN    = 12;
 
 static PIO  g_pio;
 static uint g_sm;
-
 static inline void i2s_write(int16_t l, int16_t r) {
     pio_sm_put_blocking(g_pio, g_sm, (uint32_t)(uint16_t)l << 16);
     pio_sm_put_blocking(g_pio, g_sm, (uint32_t)(uint16_t)r << 16);
 }
 
 // ── Shared state ──────────────────────────────────────────────────
-volatile float   g_pot          = 0.5f;   // 0..1 pot position
+volatile float   g_pot          = 0.5f;
 volatile bool    g_randomize    = false;
 volatile uint8_t g_zone         = 1;
 volatile bool    g_zone_changed = false;
 volatile uint8_t g_drum_trig    = 0;
+volatile int32_t g_duck         = 256;
 volatile bool    g_ready        = false;
-
-// Duck: Core1 sets to 64 on drum trigger, Core0 decays back to 256
-volatile int32_t g_duck         = 256;    // Q8, 256=no duck, 64=-12dB
 
 // ── RNG ───────────────────────────────────────────────────────────
 static uint32_t g_rng = 0xDEADBEEFu;
@@ -57,17 +60,47 @@ static inline uint32_t rng_next() {
     return g_rng;
 }
 
-// ── Pad handler ───────────────────────────────────────────────────
-static float    pad_base[4] = {200,200,200,200};
+// ── Pad sensing ───────────────────────────────────────────────────
+//
+// Valores calculados para: 1MΩ serie, ~15pF cap PCB, 100nF en ROW a GND
+//   discharge_us = 95  → descarga completa del cap de COL (5τ = 75µs + margen)
+//   max_charge_us = 200 → 4-5x el tiempo de carga con dedo (~43µs)
+//   hyst_on  = 18      → ~mitad del delta esperado (33µs)
+//   hyst_off = 10      → histéresis de release
+//
+// Si los pads siguen invertidos (noise sin tocar, silencio al tocar):
+//   → aumentar discharge_us en pasos de 50µs
+// Si no detectan el toque:
+//   → bajar hyst_on en pasos de 4µs
+
+constexpr uint32_t DISCHARGE_US  = 95;
+constexpr uint32_t MAX_CHARGE_US = 200;
+constexpr float    HYST_ON_US    = 18.0f;
+constexpr float    HYST_OFF_US   = 10.0f;
+constexpr float    BASELINE_ALPHA = 0.005f;
+
+static float    pad_base[4] = {15, 15, 15, 15}; // inicio en ~15µs (bare pad)
 static bool     pad_on[4]   = {};
 static bool     pad_prev[4] = {};
 
 static uint32_t measure_pad(uint8_t c) {
-    gpio_put(PIN_ROW, 0); sleep_us(60);
+    // Paso 1: descargar el pad capacitor poniendo ROW en LOW
+    gpio_put(PIN_ROW, 0);
+    sleep_us(DISCHARGE_US);
+
+    // Paso 2: cargar hacia HIGH y medir tiempo hasta que COL cruza el umbral
     const uint32_t t0 = time_us_32();
     gpio_put(PIN_ROW, 1);
+
+    // Esperar brevemente a que el 100nF del ROW se cargue primero
+    // (τ_row = 50Ω × 100nF = 5µs via GPIO, carga completa en ~25µs)
+    // No hacemos sleep — el loop de polling es suficiente
+
     while (!gpio_get(PIN_COL[c])) {
-        if ((time_us_32() - t0) >= 1200u) { gpio_put(PIN_ROW, 0); return 1200u; }
+        if ((time_us_32() - t0) >= MAX_CHARGE_US) {
+            gpio_put(PIN_ROW, 0);
+            return MAX_CHARGE_US;
+        }
     }
     const uint32_t dt = time_us_32() - t0;
     gpio_put(PIN_ROW, 0);
@@ -75,11 +108,16 @@ static uint32_t measure_pad(uint8_t c) {
 }
 
 static void calibrate_pads() {
-    gpio_put(PIN_ROW, 0); sleep_ms(30);
+    gpio_put(PIN_ROW, 0);
+    sleep_ms(30);
     for (uint8_t c = 0; c < 4; ++c) {
         uint64_t sum = 0;
-        for (uint8_t s = 0; s < 80; ++s) { sum += measure_pad(c); sleep_us(80); }
-        pad_base[c] = float(sum / 80);
+        // 100 muestras, ~20ms total por pad (95µs discharge + ~15µs charge × 100)
+        for (uint8_t s = 0; s < 100; ++s) {
+            sum += measure_pad(c);
+            sleep_us(50);  // pequeña pausa entre medidas
+        }
+        pad_base[c] = float(sum / 100);
     }
 }
 
@@ -89,21 +127,26 @@ static void scan_pads() {
         const uint32_t raw = measure_pad(c);
         const float delta = float(raw) - pad_base[c];
         const bool was = pad_on[c];
-        pad_on[c] = was ? (delta >= 5.0f) : (delta >= 8.0f && raw < 1200u);
-        if (!pad_on[c]) pad_base[c] += 0.008f * (float(raw) - pad_base[c]);
+        // delta POSITIVO = más tiempo de carga = más capacitancia = dedo presente
+        pad_on[c] = was ? (delta >= HYST_OFF_US) : (delta >= HYST_ON_US);
+        // Actualizar baseline solo sin toque
+        if (!pad_on[c]) {
+            pad_base[c] += BASELINE_ALPHA * (float(raw) - pad_base[c]);
+        }
     }
 }
 
-static inline bool just_pressed(uint8_t i) { return pad_on[i] && !pad_prev[i]; }
+static inline bool just_pressed(uint8_t i)  { return  pad_on[i] && !pad_prev[i]; }
+static inline bool just_released(uint8_t i) { return !pad_on[i] &&  pad_prev[i]; }
 
 // ── Drums ────────────────────────────────────────────────────────
-static uint32_t kick_ph = 0,  kick_env = 0;
-static uint32_t s_rng   = 0xABCDu, snare_env = 0;
-static uint32_t hat_env = 0;
+static uint32_t kick_ph   = 0, kick_env  = 0;
+static uint32_t s_rng     = 0xABCDu, snare_env = 0;
+static uint32_t hat_env   = 0;
 
-static void trig_kick()  { kick_env = 0xFFFFu; kick_ph = 0;  g_duck = 64; }
+static void trig_kick()  { kick_env  = 0xFFFFu; kick_ph  = 0; g_duck = 64; }
 static void trig_snare() { snare_env = 0xFFFFu; s_rng = rng_next(); g_duck = 96; }
-static void trig_hat()   { hat_env = 0x6000u;  if (g_duck > 160) g_duck = 160; }
+static void trig_hat()   { hat_env   = 0x6000u; if (g_duck > 160) g_duck = 160; }
 
 static inline int16_t proc_kick() {
     if (!kick_env) return 0;
@@ -127,62 +170,59 @@ static inline int16_t proc_hat() {
     return s;
 }
 
-// ── generate() con retry para evitar fórmulas silenciosas ─────────
+// ── generate() con retry para fórmulas silenciosas ────────────────
 static void safe_generate(BytebeatGraph& graph, uint8_t zone,
-                           const EvalContext& test_ctx) {
+                           const EvalContext& ref_ctx) {
     for (int attempt = 0; attempt < 8; ++attempt) {
         const uint32_t seed = rng_next() ^ to_ms_since_boot(get_absolute_time());
         graph.generate(seed, zone, make_zone(zone));
-
-        // Verificar que la fórmula produce sonido: 512 muestras de preview
-        EvalContext ctx = test_ctx;
+        EvalContext ctx = ref_ctx;
         int nonsilent = 0;
         for (int i = 0; i < 512; ++i) {
             ctx.t = (uint32_t)(i * 64);
-            const int16_t s = graph.preview_evaluate(ctx);
-            if (s > 64 || s < -64) ++nonsilent;
+            if (graph.preview_evaluate(ctx) > 64 ||
+                graph.preview_evaluate(ctx) < -64) ++nonsilent;
         }
-        // Si >10% de muestras son no-silenciosas, la fórmula es buena
         if (nonsilent > 51) return;
     }
-    // Último intento: forzar fórmula conocida que siempre suena
-    graph.set_formula_a(2);
-    graph.set_formula_b(5);
-    graph.set_rate(128);
-    graph.set_mask(200);
+    // Fallback: fórmula conocida
+    graph.set_formula_a(2); graph.set_formula_b(5);
+    graph.set_rate(128);    graph.set_mask(200);
 }
 
 // ── Core1 ─────────────────────────────────────────────────────────
 void core1_entry() {
     gpio_init(PIN_LED); gpio_set_dir(PIN_LED, GPIO_OUT);
-    gpio_init(PIN_ROW); gpio_set_dir(PIN_ROW, GPIO_OUT); gpio_put(PIN_ROW, 0);
+    gpio_init(PIN_ROW); gpio_set_dir(PIN_ROW, GPIO_OUT);
+    gpio_put(PIN_ROW, 0);
+
     for (uint8_t c = 0; c < 4; ++c) {
-        gpio_init(PIN_COL[c]); gpio_set_dir(PIN_COL[c], GPIO_IN);
+        gpio_init(PIN_COL[c]);
+        gpio_set_dir(PIN_COL[c], GPIO_IN);
         gpio_disable_pulls(PIN_COL[c]);
     }
 
     adc_init(); adc_gpio_init(PIN_POT); adc_select_input(0);
 
+    // LED ON durante calibración
     gpio_put(PIN_LED, 1);
     calibrate_pads();
     gpio_put(PIN_LED, 0);
     g_ready = true;
 
-    float pot_s = float(adc_read()) / 4095.0f;
+    float pot_s  = float(adc_read()) / 4095.0f;
     uint8_t zone = 1;
 
     while (true) {
-        // Pot suavizado
         pot_s += 0.12f * (float(adc_read()) / 4095.0f - pot_s);
         g_pot = pot_s;
 
         scan_pads();
 
-        if (just_pressed(0)) { g_randomize = true; gpio_put(PIN_LED, 1); }
-        if (!pad_on[0]) gpio_put(PIN_LED, 0);
-
-        if (just_pressed(1)) g_drum_trig |= 1u;
-        if (just_pressed(2)) g_drum_trig |= 2u;
+        if (just_pressed(0))  { g_randomize = true; gpio_put(PIN_LED, 1); }
+        if (just_released(0))   gpio_put(PIN_LED, 0);
+        if (just_pressed(1))    g_drum_trig |= 1u;
+        if (just_pressed(2))    g_drum_trig |= 2u;
         if (just_pressed(3)) {
             g_drum_trig |= 4u;
             zone = (uint8_t)((zone + 1u) % 5u);
@@ -212,38 +252,25 @@ int main() {
     BytebeatGraph graph;
     uint8_t zone = 1;
 
-    // EvalContext base — ctx.tonal es el parámetro más audible del pot
     EvalContext ctx{};
-    ctx.t                = 0;
-    ctx.macro            = 0.5f;
-    ctx.tonal            = 0.5f;   // ← pot mapea aquí: LP (0) → HP (1)
-    ctx.zone             = zone;
-    ctx.time_div         = 1.0f;
-    ctx.spread           = 0.0f;
-    ctx.quant_amount     = 0.0f;
-    ctx.scale_id         = 1;
-    ctx.root             = 0;
-    ctx.note_mode_active = false;
-    ctx.note_pitch_ratio = 1.0f;
-    ctx.drum_color       = 0.3f;
-    ctx.drum_decay       = 0.5f;
-    ctx.breath_amount    = 0.2f;
-    ctx.harmonic_blend   = 0.3f;
+    ctx.t = 0; ctx.macro = 0.5f; ctx.tonal = 0.5f;
+    ctx.zone = zone; ctx.time_div = 1.0f; ctx.spread = 0.0f;
+    ctx.quant_amount = 0.0f; ctx.scale_id = 1; ctx.root = 0;
+    ctx.note_mode_active = false; ctx.note_pitch_ratio = 1.0f;
+    ctx.drum_color = 0.3f; ctx.drum_decay = 0.5f;
+    ctx.breath_amount = 0.2f; ctx.harmonic_blend = 0.3f;
 
     safe_generate(graph, zone, ctx);
 
-    int32_t duck_smooth = 256;  // local smoothed duck
+    int32_t duck_smooth = 256;
     uint32_t cr = 0;
 
     while (true) {
-        // Control rate cada 32 samples
         if (++cr >= 32u) {
             cr = 0;
-
-            // POT → ctx.tonal (filtro audible) + ctx.macro (morph/color)
             const float pot = g_pot;
-            ctx.tonal = pot;          // LP→HP muy audible
-            ctx.macro = pot * 0.8f;   // morph adicional
+            ctx.tonal = pot;
+            ctx.macro = pot * 0.8f;
 
             if (g_randomize) {
                 g_randomize = false;
@@ -263,16 +290,14 @@ int main() {
                 if (dt & 4u) trig_hat();
             }
 
-            // Duck recovery: vuelve a 256 en ~200ms (32 control ticks = ~23ms cada uno)
-            int32_t target_duck = g_duck;
-            duck_smooth += (target_duck - duck_smooth) >> 3;
-            if (duck_smooth > 250) { duck_smooth = 256; g_duck = 256; }
+            // Duck recovery
+            int32_t td = g_duck;
+            duck_smooth += (td - duck_smooth) >> 3;
+            if (duck_smooth >= 254) { duck_smooth = 256; g_duck = 256; }
         }
 
         ctx.t++;
         int16_t synth = graph.evaluate(ctx);
-
-        // Aplicar duck al bytebeat para que los drums se escuchen
         synth = (int16_t)((int32_t)synth * duck_smooth >> 8);
 
         int32_t out = (int32_t)synth
