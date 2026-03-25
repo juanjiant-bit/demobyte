@@ -29,6 +29,6 @@ target_link_libraries(dem0byt3_v2
 )
 
 target_compile_options(dem0byt3_v2 PRIVATE -O2 -ffast-math)
-pico_enable_stdio_usb(dem0byt3_v2 1)
+pico_enable_stdio_usb(dem0byt3_v2 0)  # OFF: USB IRQs interfieren con timing de pads
 pico_enable_stdio_uart(dem0byt3_v2 0)
 pico_add_extra_outputs(dem0byt3_v2)

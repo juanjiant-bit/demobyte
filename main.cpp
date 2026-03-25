@@ -148,9 +148,11 @@ struct BB {
 };
 
 // ── Pad sensing ───────────────────────────────────────────────────
-static float    pad_base[4] = {};
-static bool     pad_on[4]   = {};
-static bool     pad_prev[4] = {};
+static float    pad_base[4]    = {};
+static bool     pad_on[4]     = {};
+static bool     pad_prev[4]   = {};
+static uint8_t  pad_confirm[4] = {};  // contador de confirmación anti-crosstalk
+static constexpr uint8_t PAD_CONFIRM_NEEDED = 3;  // 3 scans consecutivos para activar
 
 static uint32_t measure_pad(uint8_t c) {
     gpio_put(PIN_ROW, 0);
@@ -181,11 +183,27 @@ static void scan_pads() {
         pad_prev[c] = pad_on[c];
         const uint32_t raw = measure_pad(c);
         const float d = float(raw) - pad_base[c];
-        const float on_th  = pad_base[c] * 0.35f;  // 35% — requiere toque firme
-        const float off_th = pad_base[c] * 0.20f;  // 20% — hyst para evitar chatter
-        pad_on[c] = pad_on[c] ? (d >= off_th) : (d >= on_th);
-        if (!pad_on[c])
-            pad_base[c] += 0.002f * (float(raw) - pad_base[c]);  // drift lento = más estable
+        const float on_th  = pad_base[c] * 0.35f;
+        const float off_th = pad_base[c] * 0.20f;
+
+        if (!pad_on[c]) {
+            // Para activar: necesita PAD_CONFIRM_NEEDED scans consecutivos por encima del threshold
+            // Esto elimina spikes de crosstalk (que duran 1-2 scans)
+            if (d >= on_th) {
+                if (++pad_confirm[c] >= PAD_CONFIRM_NEEDED)
+                    pad_on[c] = true;
+            } else {
+                pad_confirm[c] = 0;
+                pad_base[c] += 0.002f * (float(raw) - pad_base[c]);
+            }
+        } else {
+            // Para desactivar: basta con un scan por debajo del threshold de salida
+            if (d < off_th) {
+                pad_on[c] = false;
+                pad_confirm[c] = 0;
+                pad_base[c] += 0.002f * (float(raw) - pad_base[c]);
+            }
+        }
     }
 }
 
@@ -236,7 +254,7 @@ int main() {
     // Init drum engine
     static DrumEngine drums;
     drums.init();
-    drums.set_params(0.3f, 0.5f, 0.7f);  // color=0.3, decay=0.5, duck=0.7
+    drums.set_params(0.3f, 0.5f, 1.0f);  // color=0.3, decay=0.5, duck=1.0 (máximo)
 
     // Init bytebeat
     static BB bb;
