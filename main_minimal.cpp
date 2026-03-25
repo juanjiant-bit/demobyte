@@ -71,8 +71,8 @@ static inline float shaped_rand(float c, float s) {
 // ── Pad sensing — directo, sin CapPadHandler ─────────────────────
 // discharge 50ms garantiza descarga completa de pads grandes de cobre
 
-constexpr uint32_t DISCHARGE_US = 50000;
-constexpr uint32_t MAX_US       = 200000;
+constexpr uint32_t DISCHARGE_US = 5000;   // 5ms — ajustar si pads no responden
+constexpr uint32_t MAX_US       = 30000;   // 30ms timeout
 
 static float    pad_base[4] = {};
 static bool     pad_on[4]   = {};
@@ -95,8 +95,8 @@ static void calibrate_pads() {
     gpio_put(PIN_ROW, 0); sleep_ms(100);
     for (uint8_t c = 0; c < 4; ++c) {
         uint64_t sum = 0;
-        for (int s = 0; s < 20; ++s) sum += measure_pad(c);
-        pad_base[c] = float(sum / 20);
+        for (int s = 0; s < 5; ++s) sum += measure_pad(c);
+        pad_base[c] = float(sum / 5);
         printf("pad%u baseline=%.0fus\n", c, (double)pad_base[c]);
     }
 }

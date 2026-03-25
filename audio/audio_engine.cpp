@@ -1138,6 +1138,7 @@ void AudioEngine::process_one_sample() {
         note_ctx.t = (uint32_t)((float)(base_t + note_voice_.t_offset) * nv_pitch);
 
         int16_t raw_nv = note_voice_graph_.evaluate(note_ctx);
+        float bb = (float)raw_nv / 32768.0f;  // FIX: moved before first use
         const float note_env = (float)note_voice_.env_q16 / 65535.0f;
 
         const float dt = 1.0f / 44100.0f;
@@ -1285,8 +1286,6 @@ void AudioEngine::process_one_sample() {
                 algo_out_trim = 0.94f;
                 break;
         }
-
-        float bb = (float)raw_nv / 32768.0f;
 
         float float_mix = 0.08f + 0.24f * float_body_macro_ + algo_float_bias;
         float fb_mix    = 0.02f + 0.26f * floatbeat_mix_macro_ + algo_fb_bias;
