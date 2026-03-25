@@ -154,7 +154,7 @@ static bool     pad_prev[4] = {};
 
 static uint32_t measure_pad(uint8_t c) {
     gpio_put(PIN_ROW, 0);
-    sleep_us(5000);
+    sleep_us(20000);  // 20ms discharge — más tiempo = descarga completa en pads grandes
     const uint32_t t0 = time_us_32();
     gpio_put(PIN_ROW, 1);
     while (!gpio_get(PIN_COL[c])) {
@@ -171,8 +171,8 @@ static void calibrate_pads() {
     gpio_put(PIN_ROW, 0); sleep_ms(50);
     for (uint8_t c = 0; c < 4; ++c) {
         uint64_t sum = 0;
-        for (int s = 0; s < 5; ++s) sum += measure_pad(c);
-        pad_base[c] = float(sum / 5);
+        for (int s = 0; s < 10; ++s) sum += measure_pad(c);
+        pad_base[c] = float(sum / 10);
     }
 }
 
@@ -181,11 +181,11 @@ static void scan_pads() {
         pad_prev[c] = pad_on[c];
         const uint32_t raw = measure_pad(c);
         const float d = float(raw) - pad_base[c];
-        const float on_th  = pad_base[c] * 0.15f;
-        const float off_th = pad_base[c] * 0.08f;
+        const float on_th  = pad_base[c] * 0.35f;  // 35% — requiere toque firme
+        const float off_th = pad_base[c] * 0.20f;  // 20% — hyst para evitar chatter
         pad_on[c] = pad_on[c] ? (d >= off_th) : (d >= on_th);
         if (!pad_on[c])
-            pad_base[c] += 0.01f * (float(raw) - pad_base[c]);
+            pad_base[c] += 0.002f * (float(raw) - pad_base[c]);  // drift lento = más estable
     }
 }
 
