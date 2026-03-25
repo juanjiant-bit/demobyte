@@ -20,7 +20,7 @@
 ; With a left-aligned 16-bit sample inside a 32-bit word, the DAC sees:
 ;   dummy + 16 valid bits + 15 zero padding bits
 ;
-; This is the safest minimal Philips-I2S implementation for PCM5102.
+; This is the safest minimal Philips-I2S test pattern for PCM5102.
 
 .wrap_target
 public entry_point:
