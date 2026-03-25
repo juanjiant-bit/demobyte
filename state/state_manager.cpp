@@ -881,6 +881,8 @@ void StateManager::request_save(uint8_t slot, const float pots[7]) {
 
 
 void StateManager::set_graph_param_on_live_graphs(ParamId id, uint8_t value) {
+    begin_live_write();  // FIX: faltaba seqlock — sin esto Core0 puede leer
+                         // un seq impar y spinear para siempre en make_audio_snapshot
     switch (id) {
     case PARAM_FORMULA_A:
         graphs_[active_graph_].set_formula_a(value);
@@ -941,7 +943,7 @@ void StateManager::set_graph_param_on_live_graphs(ParamId id, uint8_t value) {
     default:
         break;
     }
-    end_live_write();
+    end_live_write();  // FIX: cierre del seqlock
 }
 
 bool StateManager::apply_graph_param(ParamId id, float value) {
