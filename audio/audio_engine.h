@@ -32,10 +32,11 @@ public:
     OutputMode output_mode() const { return output_mode_; }
     void update_breath_analysis(float mono_abs);
 
+    void        process_one_sample();   // public: llamado directamente en tight loop
+
 private:
     static bool timer_callback(repeating_timer_t* rt);
     void        generate_samples();
-    void        process_one_sample();
     void        drain_events();
     void        refresh_control_block();
     void        begin_spread_segment(const EvalContext& ctx, uint32_t base_t, float pitch_ratio);

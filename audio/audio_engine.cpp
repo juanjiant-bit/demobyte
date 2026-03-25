@@ -148,7 +148,7 @@ static inline float voice_shaper(float x, float drive, float tone) {
     return low + high;
 }
 
-static inline float process_voice_comb(float x, float* buf, uint16_t& idx, float& lp) {
+static inline float process_voice_comb(AudioEngine* engine, float x, float* buf, uint16_t& idx, float& lp) {
     const float delayed = buf[idx];
     lp += 0.18f * (delayed - lp);
     float out = x + lp * 0.42f;
@@ -157,7 +157,7 @@ static inline float process_voice_comb(float x, float* buf, uint16_t& idx, float
     idx = (uint16_t)((idx + 1u) & 255u);
     // keep the comb musical and bounded
     out = out / (1.0f + 0.25f * fabsf(out));
-    update_breath_analysis(fabsf(out));
+    if (engine) engine->update_breath_analysis(fabsf(out));
     return out;
 }
 
@@ -1657,7 +1657,7 @@ void AudioEngine::process_one_sample() {
     float scene_r = (float)synth_mix_r / 32768.0f;
 
     float voice_m = ((float)note_voice_s + (float)snapshot_voice_s) / 32768.0f;
-    voice_m = process_voice_comb(voice_m, voice_comb_buf_, voice_comb_idx_, voice_comb_lp_);
+    voice_m = process_voice_comb(this, voice_m, voice_comb_buf_, voice_comb_idx_, voice_comb_lp_);
 
     // Stage 3C: subgrave controlado por macro + cuerpo float en voices.
     const float target_sub = note_voice_.active
