@@ -5,16 +5,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt/archives
+          key: apt-arm-${{ runner.os }}-v1
+
       - name: Install dependencies
-        run: sudo apt update && sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential
+        run: |
+          sudo apt update
+          sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential
+
+      - name: Cache pico-sdk
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: pico-sdk
+          key: pico-sdk-master-v1
+
       - name: Clone pico-sdk
-        run: git clone https://github.com/raspberrypi/pico-sdk.git --depth=1 && cd pico-sdk && git submodule update --init
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/raspberrypi/pico-sdk.git --depth=1
+          cd pico-sdk && git submodule update --init
+
       - name: Build
         run: |
           export PICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk
           mkdir build && cd build
           cmake .. -DPICO_BOARD=pico
           make dem0byt3_v3 -j4
+
       - name: Upload UF2
         uses: actions/upload-artifact@v4
         with:
