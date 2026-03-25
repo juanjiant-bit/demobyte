@@ -19,7 +19,7 @@
 #include "pico/stdlib.h"
 #include "hardware/clocks.h"
 #include "hardware/pio.h"
-#include "audio/pcm5102_i2s.pio.h"
+#include "pcm5102_i2s.pio.h"
 
 #if defined(STAGE2) || defined(STAGE3)
 #include "pico/multicore.h"
