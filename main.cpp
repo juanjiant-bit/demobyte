@@ -155,7 +155,9 @@ struct Voice {
         const uint32_t ts=t/(brate?brate:1u);
         uint8_t va=bbf(bfa,ts,bseed);
         uint8_t vb=bbf(bfb,ts^(uint32_t)(bseed*0x55u),bseed^0xA5u);
-        uint8_t raw=(uint8_t)(((uint16_t)va*(255u-bmorph)+(uint16_t)vb*bmorph)>>8);
+        // macro2 desplaza el morph interno del BB (0=fórmula A pura, 1=fórmula B pura)
+        uint8_t eff_morph=(uint8_t)(bmorph*(1.f-macro2*0.8f)+macro2*0.8f*255.f);
+        uint8_t raw=(uint8_t)(((uint16_t)va*(255u-eff_morph)+(uint16_t)vb*eff_morph)>>8);
         float bb=float((int8_t)(raw^0x80u))*(1.f/128.f);
 
         // LP para suavizar aliasing del BB — más agresivo cuando domain<0.5
@@ -169,12 +171,15 @@ struct Voice {
         bb=float(y)*(1.f/32767.f);
 
         // Floatbeat
-        // macro1 mueve la hz: 0=graves(55Hz), 1=agudos(880Hz)
-        // Blend suave entre hz fija del voice y hz del macro
-        float hz_macro = 55.f*powf(2.f, macro1*4.f);
-        float hz_use = fhz*0.4f + hz_macro*0.6f;
-        // macro2 mueve fbody y afecta bb_morph
-        float body_use = fbody*0.4f + macro2*0.6f;
+        // MACRO1: transpone la hz completamente — 0=55Hz, 1=880Hz
+        // La hz del voice es el "caracter" base, macro la escala multiplicativamente
+        // Esto preserva la relación armónica de la fórmula
+        float hz_scale = 0.125f + macro1*7.875f;  // 0.125x..8x (rango de 6 octavas)
+        float hz_use = fhz * hz_scale;
+        if(hz_use<20.f)hz_use=20.f;
+        if(hz_use>3000.f)hz_use=3000.f;
+        // MACRO2: fbody completo + afecta bb internamente via bmorph
+        float body_use = macro2;
         float fb=fbalgo(fst,DT,hz_use,body_use,falgo);
         float fy=fb-fdcx+fdcy*(252.f/256.f); fdcx=fb; fdcy=fy; fb=fy;
 
@@ -225,8 +230,8 @@ struct Synth {
 
 // ── Pads con auto-discharge ───────────────────────────────────────
 // ── Pads resistivos (10kΩ pullup a 3V3, 100nF a GND) ─────────
-static constexpr uint32_t PAD_CHARGE_US = 300;
-static constexpr uint32_t PAD_MAX_US    = 25000;  // 25ms — más margen para cap 100nF
+static constexpr uint32_t PAD_CHARGE_US = 5000;  // 5ms = 5×RC (10kΩ×100nF)
+static constexpr uint32_t PAD_MAX_US    = 20000;  // 20ms timeout sin dedo
 static float   pad_base_t = 10000.f;
 static bool    pad_on[4]  = {}, pad_prev[4] = {};
 static uint8_t pad_conf[4]= {};
@@ -305,8 +310,15 @@ int main(){
 
     static Synth synth;
     // Randomizar las dos voces al inicio para tener algo que escuchar
-    // Seed del RNG con el tiempo de arranque para variedad entre resets
-    g_rng ^= to_ms_since_boot(get_absolute_time()) ^ 0xDEAD1234u;
+    // Entropía real: ruido térmico del ADC sin señal → siempre distinto
+    // El ADC flotante genera bits aleatorios por thermal noise
+    adc_init(); adc_gpio_init(26);
+    uint32_t entropy = 0;
+    for(int i=0;i<64;++i){
+        adc_select_input(0);
+        entropy = entropy*1664525u + adc_read() + 1013904223u;
+    }
+    g_rng ^= entropy ^ 0xDEAD1234u;
     synth.voices[0].randomize(rng_f());
     synth.voices[1].randomize(rng_f());
 
