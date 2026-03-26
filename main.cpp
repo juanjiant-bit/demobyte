@@ -309,18 +309,6 @@ static void scan_pads(){
     }
 }
 
-static void scan_pads(){
-    for(uint8_t c=0;c<4;++c){
-        pad_prev[c]=pad_on[c];
-        bool touched=measure_pad_touched(c);
-        if(!pad_on[c]){
-            if(touched){if(++pad_conf[c]>=2)pad_on[c]=true;}
-            else pad_conf[c]=0;
-        } else {
-            if(!touched){pad_on[c]=false;pad_conf[c]=0;}
-        }
-    }
-}
 
 static float adc_direct(uint ch){
     adc_select_input(ch);
