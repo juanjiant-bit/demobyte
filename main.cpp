@@ -1,4 +1,21 @@
-// Dem0!Byt3 V6 — drums audibles + morph real + pad crosstalk fix
+// Dem0!Byt3 V10 — tipo de fórmula libre + BPM lock + stereo
+//
+// FÓRMULAS: A y B son independientes, cada una puede ser BB o FB
+//   BB: 12 fórmulas (melódicas, rítmicas, drones)
+//   FB: 12 algos (armónicos, rítmicos, secuenciales, texturales)
+//   randomize() elige tipo y fórmula independientemente → BB+BB, FB+FB, BB+FB
+//
+// MORPH: 0=voz A pura, 0.5=blend 50/50, 1=voz B pura
+//   En el centro las dos naturalezas se mezclan directamente
+//
+// BPM MASTER: un tick counter compartido garantiza sincronía cada 4 beats
+//   Voz A corre en tick/1, voz B en tick*2/3 (poliritmia 3:2)
+//   Cada 4 beats las fases se alinean → frases de 4 compases
+//
+// STEREO:
+//   Haas delay en voz B canal R (7ms) → imagen ancha instantánea
+//   LFO de paneo independiente en A y B → movimiento orgánico lento
+//   Detune sutil de 3 cents entre L y R en FB → chorus muy suave
 
 #include <cstdint>
 #include <cmath>
@@ -16,278 +33,429 @@ static inline void i2s_write(int16_t l,int16_t r){
     pio_sm_put_blocking(g_pio,g_sm,(uint32_t)(uint16_t)l<<16);
     pio_sm_put_blocking(g_pio,g_sm,(uint32_t)(uint16_t)r<<16);
 }
-constexpr uint PIN_ROW=5,PIN_COL[]={8,9,13,14},PIN_LED=25,PIN_POT=26,PIN_BCLK=10,PIN_DIN=12,SR=44100;
 
-static volatile float   g_pot=0.5f;
+constexpr uint PIN_PAD[4]={8,9,13,14};
+constexpr uint PIN_LED=25,PIN_BCLK=10,PIN_DIN=12,SR=44100;
+
+static volatile float   g_morph=0.5f,g_macro1=0.5f,g_macro2=0.5f;
 static volatile uint8_t g_pad_event=0;
 static volatile bool    g_ready=false;
 
 static uint32_t g_rng=0xDEADBEEFu;
 static inline uint32_t rng_next(){g_rng^=g_rng<<13;g_rng^=g_rng>>17;g_rng^=g_rng<<5;return g_rng;}
 static inline float rng_f(){return float(rng_next()>>8)*(1.f/16777215.f);}
+static inline float clamp01(float x){return x<0?0:(x>1?1:x);}
+
+// ── Osciladores ───────────────────────────────────────────────────
 static inline float fw(float x){x-=(int)x;return x<0?x+1.f:x;}
-static inline float fs(float p){float x=fw(p)*6.28318f-3.14159f,y=x*(1.2732f-0.4053f*fabsf(x));return y*(0.225f*(fabsf(y)-1.f)+1.f);}
+static inline float fs(float p){
+    float x=fw(p)*6.28318f-3.14159f,y=x*(1.2732f-0.4053f*fabsf(x));
+    return y*(0.225f*(fabsf(y)-1.f)+1.f);
+}
 static inline float ft(float p){float x=fw(p);return 4.f*fabsf(x-.5f)-1.f;}
 static inline float fsq(float p,float pw=.5f){return fw(p)<pw?1.f:-1.f;}
+static inline float fsaw(float p){return fw(p)*2.f-1.f;}
 static inline float fclip(float x){return x/(1.f+fabsf(x));}
-static inline float ffold(float x){x=x*.5f+.5f;x-=(int)x;if(x<0)x+=1.f;return x*2.f-1.f;}
-static inline float lerp(float a,float b,float t){return a+(b-a)*t;}
+static inline float ffold(float x){
+    x=x*.5f+.5f; x-=(int)x; if(x<0)x+=1.f; return x*2.f-1.f;
+}
 
-// ── Bytebeat ──────────────────────────────────────────────────────
-static inline uint8_t bbf(uint8_t id,uint32_t t,uint8_t s){
-    switch(id%17u){
-    case 0:return(uint8_t)(t*((((t>>10)&42u)&0xFFu)?(((t>>10)&42u)&0xFFu):1u));
-    case 1:return(uint8_t)(t*((((t>>9)^(t>>11))&28u)+4u));
-    case 2:return(uint8_t)(t*((((t>>8)&15u)^((t>>11)&7u))+3u));
-    case 3:return(uint8_t)(t*((((t>>10)&5u)|((t>>13)&2u))+2u));
-    case 4:return(uint8_t)(t&(t>>8));
-    case 5:return(uint8_t)(((t*5u)&(t>>7))|((t*3u)&(t>>10)));
-    case 6:return(uint8_t)(((t>>6)|(t*3u))&((t>>9)|(t*5u)));
-    case 7:return(uint8_t)(((t>>5)&(t>>8))|((t>>3)&(t*2u)));
-    case 8:return(uint8_t)(((t>>4)&(t>>7))*((255u-(t>>6))&255u));
-    case 9:return(uint8_t)(((t*(9u+(s&1u)))&(t>>4))^((t*(5u+((s>>1)&1u)))&(t>>7)));
-    case 10:return(uint8_t)((t>>2)^(t>>5)^(t>>7));
-    case 11:return(uint8_t)((t*((t>>9)&3u))&(t>>5));
-    case 12:return(uint8_t)(t^(t>>3)^(t>>6));
-    case 13:return(uint8_t)((t*(t>>9))^(t>>7)^(t>>13));
-    case 14:return(uint8_t)(((t*7u)&(t>>9))^((t*11u)&(t>>11)));
-    case 15:return(uint8_t)((t*((((t>>10)&21u)+3u)))|((t>>7)&(t>>9)));
-    case 16:return(uint8_t)(((t*((((t>>11)&13u)+2u)))^((t*5u)&(t>>8))));
+// ── BPM MASTER ────────────────────────────────────────────────────
+// 120 BPM, 48 ticks por beat
+// Tick period = 44100*60/(120*48) = ~459 samples por tick
+constexpr uint32_t BPM         = 120;
+constexpr uint32_t TICKS_BEAT  = 48;
+constexpr uint32_t TICK_SAMP   = SR*60u/(BPM*TICKS_BEAT); // 459 samples/tick
+constexpr uint32_t SYNC_TICKS  = 4*TICKS_BEAT;            // sincronía cada 4 beats
+
+static uint32_t g_tick_accum = 0;
+static uint32_t g_tick       = 0;  // contador global de ticks
+
+// Voz A usa g_tick directamente
+// Voz B usa g_tick * 2 / 3 (poliritmia 3:2, se sincroniza cada 3 beats de A = 2 de B)
+static inline uint32_t tick_a(){ return g_tick; }
+static inline uint32_t tick_b(){ return (g_tick * 2u) / 3u; }
+
+// ── BYTEBEAT — 12 fórmulas ────────────────────────────────────────
+// El 't' aquí es el tick del BPM master, no el sample counter
+// Esto garantiza que los períodos sean múltiplos de divisiones musicales
+static inline uint8_t bbf(uint8_t id, uint32_t t, uint8_t s){
+    switch(id%12u){
+    // ── Melódicas ────────────────────────────────────────────────
+    case 0: return(uint8_t)(t*(t>>11&t>>8&57u));              // clásica Viznut
+    case 1: return(uint8_t)((t*(t>>9|t>>13))|t>>6);           // arpeggio lento
+    case 2: return(uint8_t)(t*((t>>8|t>>9)&63u));             // melodía corta
+    case 3: return(uint8_t)((t>>7|t|t>>6)*10u+4u*(t&t>>13|t>>6)); // compleja
+    // ── Rítmicas/percusivas ──────────────────────────────────────
+    case 4: return(uint8_t)((t&t>>8)*(t>>4|t>>8));            // pulsante
+    case 5: return(uint8_t)(((t*5u)&(t>>7))|((t*3u)&(t>>10)));// groovy
+    case 6: return(uint8_t)(t*(((t>>11)&3u)+1u)&(t>>5));      // stutter
+    case 7: return(uint8_t)(((t*7u)&(t>>6))|(t>>4));          // agresivo
+    // ── Drones/ambiente ──────────────────────────────────────────
+    case 8: return(uint8_t)(t^(t>>3)^(t>>6));                 // ruido suave
+    case 9: return(uint8_t)((t>>2)^(t>>5)^(t>>7));            // textura fina
+    case 10:return(uint8_t)((t*(t>>9))^(t>>7)^(t>>13));       // drone cambiante
+    case 11:return(uint8_t)(((t*11u)&(t>>9))^((t*5u)&(t>>11)));// metallic
     default:return(uint8_t)t;
     }
 }
 
-// ── Floatbeat — 12 algos con drift interno anti-tono-fijo ─────────
+// ── FLOATBEAT — 12 algos ─────────────────────────────────────────
 static constexpr float PENTA[8]={1.f,1.189f,1.335f,1.498f,1.782f,2.f,2.378f,2.670f};
 static constexpr float BASS[4]={.5f,.749f,1.f,.749f};
-struct FbSt{float t=0,env=0,sph=0,drift=0; uint32_t lf=0xACE1u;};
 
-static float fbalgo(FbSt&st,float dt,float hz,float body,uint8_t algo){
+struct FbSt{
+    float t=0,env=0,sph=0,drift=0;
+    uint32_t lf=0xACE1u;
+    // Para arpegio: step actual y fase dentro del step
+    uint32_t arp_step=0;
+    float    arp_ph=0;
+};
+
+// hz_detune: multiplicador sutil para el canal R (stereo chorus)
+static float fbalgo(FbSt&st, float dt, float hz, float body, uint8_t algo,
+                    float hz_detune=1.f){
     st.t+=dt; if(st.t>4096.f)st.t-=4096.f;
-    // Drift lento: oscila ±8% en período de 4-7 segundos — da vida a tonos fijos
+    // Drift muy lento — ±4% en ~6s — da vida sin vibrato obvio
     st.drift+=dt*0.17f; if(st.drift>6.28318f)st.drift-=6.28318f;
-    float hz_live=hz*(1.f+fs(st.drift*0.15f)*0.08f);
+    float hzl=hz*hz_detune*(1.f+fs(st.drift*0.13f)*0.04f);
     const float t=st.t;
-    hz_live=hz_live<20?20:(hz_live>2200?2200:hz_live);
-    body=body<0?0:(body>1?1:body);
+    hzl=hzl<15?15:(hzl>2400?2400:hzl);
+    body=clamp01(body);
+
     switch(algo%12u){
-    case 0:{float x=fs(t*hz_live)*(.5f+.2f*body)+fs(t*hz_live*.5f)*(.25f+.2f*body)+fs(t*hz_live*1.5f)*.08f; return fclip(x*.85f);}
-    case 1:{float x=fs(t*hz_live*.5f)*.55f+fs(t*hz_live)*.30f+ft(t*hz_live*2.f)*.08f*(1.f+body); return fclip(x*.9f);}
-    case 2:{float a=fs(t*hz_live),b=fs(t*(hz_live*1.007f)); return fclip(a*b*(.7f+.2f*body)+fs(t*hz_live*.5f)*.2f);}
-    case 3:{st.env+=dt*4.f;if(st.env>1.f)st.env=0.f; float e=1.f-st.env; return fclip(fs(t*hz_live+fs(t*hz_live*2.f)*.3f*e)*e*(.8f+.15f*body));}
-    case 4:{float pw=.1f+.4f*(fs(t*hz_live*.125f)*.5f+.5f); return fclip((fsq(t*hz_live,pw)*(.5f+.3f*body)+fs(t*hz_live*.5f)*.2f)*.75f);}
-    case 5:{float gate=fsq(t*hz_live*.0625f,.35f)*.5f+.5f; return fclip((fs(t*hz_live)+ft(t*hz_live*2.01f)*.3f)*gate*(.7f+.2f*body));}
-    case 6:{st.sph+=dt*hz_live*.03125f; uint8_t n=(uint8_t)(st.sph)%8u; return fclip((fs(t*hz_live*PENTA[n])*(.65f+.2f*body)+fs(t*hz_live*PENTA[n]*.5f)*.2f)*.85f);}
-    case 7:{float ps=st.sph; st.sph+=dt*hz_live*.03125f;
-            if((uint8_t)st.sph!=(uint8_t)ps){st.lf^=st.lf<<7;st.lf^=st.lf>>9;}
-            return fclip(fs(t*hz_live*PENTA[st.lf%8u])*(.75f+.15f*body));}
-    case 8:{st.sph+=dt*hz_live*.015625f; uint8_t n=(uint8_t)(st.sph)%4u; return fclip((fs(t*hz_live*BASS[n])*(.6f+.25f*body)+fs(t*hz_live*BASS[n]*.5f)*.25f));}
-    case 9:{float idx=2.f+body*5.f,mod=fs(t*(hz_live*1.41f))*idx; return fclip((fs(t*hz_live+mod)*.6f+fs(t*hz_live*.5f)*.2f)*.8f);}
-    case 10:{float x=ft(t*hz_live)*(1.5f+body*2.5f); return fclip(ffold(x)*(.65f+.2f*body));}
-    case 11:{st.lf^=st.lf<<13;st.lf^=st.lf>>17;st.lf^=st.lf<<5;
-             float n=float((int32_t)st.lf)*(1.f/2147483648.f);
-             return fclip(fs(t*hz_live)*(.3f+.4f*body)+n*(.15f-.1f*body));}
+    // ── Armónicas/tónicas ────────────────────────────────────────
+    case 0:{  // sine stack — warm pad
+        float x=fs(t*hzl)*(.50f+.20f*body)
+               +fs(t*hzl*.5f)*(.28f+.18f*body)
+               +fs(t*hzl*2.f)*.06f
+               +fs(t*hzl*3.f)*.03f*(body);
+        return fclip(x*.85f);
+    }
+    case 1:{  // sub organ — fundamental énfasis
+        float x=fs(t*hzl*.5f)*.58f
+               +fs(t*hzl)*.28f
+               +ft(t*hzl*2.f)*.09f*(1.f+body);
+        return fclip(x*.90f);
+    }
+    case 2:{  // ring + beating — metallic shimmer
+        float a=fs(t*hzl), b=fs(t*(hzl*1.0047f));  // ~8 cents → beating
+        float x=a*b*(.65f+.20f*body)+fs(t*hzl*.5f)*.22f;
+        return fclip(x);
+    }
+    // ── Rítmicas con envelope interno ────────────────────────────
+    case 3:{  // pluck — decay proporcional al hz
+        float decay_rate=hzl*dt*2.5f;
+        st.env+=decay_rate; if(st.env>1.f)st.env=0.f;
+        float e=1.f-st.env*st.env;
+        float fm=fs(t*hzl*2.f)*(.3f+.4f*body)*e;
+        return fclip(fs(t*hzl+fm)*e*.90f);
+    }
+    case 4:{  // stutter — duty cycle variable
+        float pw=.08f+.44f*(fs(t*hzl*.08f)*.5f+.5f);
+        float x=fsq(t*hzl,pw)*(.55f+.25f*body)
+               +fs(t*hzl*.5f)*.20f;
+        return fclip(x*.75f);
+    }
+    case 5:{  // gate burst — patrón rítmico con subdivisión
+        float gate=fsq(t*hzl*.0625f,.3f)*.5f+.5f;
+        float x=(fs(t*hzl)+ft(t*hzl*2.f)*.28f)*gate;
+        return fclip(x*(.72f+.20f*body));
+    }
+    // ── Secuenciales/melódicas ────────────────────────────────────
+    case 6:{  // arpeggio pentatónica ascendente
+        st.arp_ph+=dt*hzl*.03125f;
+        uint8_t n=(uint8_t)(st.arp_ph)%8u;
+        float f=hzl*PENTA[n];
+        float x=fs(t*f)*(.60f+.20f*body)+fs(t*f*.5f)*.22f;
+        return fclip(x*.85f);
+    }
+    case 7:{  // arpeggio pentatónica random — salta entre notas
+        float prev=st.arp_ph; st.arp_ph+=dt*hzl*.025f;
+        if((uint8_t)st.arp_ph!=(uint8_t)prev){
+            st.lf^=st.lf<<7; st.lf^=st.lf>>9; st.lf^=st.lf<<8;
+        }
+        float f=hzl*PENTA[st.lf%8u];
+        return fclip(fs(t*f)*(.72f+.18f*body));
+    }
+    case 8:{  // bass sequence — 4 notas que se repiten
+        st.arp_ph+=dt*hzl*.015625f;
+        uint8_t n=(uint8_t)(st.arp_ph)%4u;
+        float f=hzl*BASS[n];
+        float x=fs(t*f)*(.62f+.22f*body)+fs(t*f*.5f)*.26f;
+        return fclip(x);
+    }
+    // ── Texturales/experimentales ─────────────────────────────────
+    case 9:{  // FM caótico — índice crece con body
+        float idx=1.5f+body*6.f;
+        float mod=fs(t*(hzl*1.618f))*idx;  // razón áurea como ratio
+        float x=fs(t*hzl+mod)*(.62f+.15f*body)
+               +fs(t*hzl*.5f)*.18f;
+        return fclip(x*.82f);
+    }
+    case 10:{ // wavefold con sweep lento
+        float fold_amt=1.2f+body*2.8f+fs(t*hzl*.02f)*.8f;
+        float x=ft(t*hzl)*fold_amt;
+        return fclip(ffold(x)*(.65f+.20f*body));
+    }
+    case 11:{ // noise resonante — LP con retroalimentación del seno
+        st.lf^=st.lf<<13; st.lf^=st.lf>>17; st.lf^=st.lf<<5;
+        float noise=float((int32_t)st.lf)*(1.f/2147483648.f)*.25f;
+        float res=fs(t*hzl)*(.35f+.35f*body);
+        return fclip(res+noise*(1.f-body*.6f));
+    }
     default:return 0.f;
     }
 }
 
-// ── Voice ─────────────────────────────────────────────────────────
-struct Voice{
-    uint8_t  bfa=2,bfb=10,bmorph=128,bseed=0; uint16_t brate=1;
-    FbSt     fst; uint8_t falgo=0; float fhz=110.f,fbody=.5f;
-    float    lp=0.f; int32_t dcx=0,dcy=0; float fdcx=0,fdcy=0;
+// ── VOICE: puede ser BB o FB, tipo elegido en randomize ───────────
+struct Voice {
+    bool     is_fb  = false;   // false=BB, true=FB
+    // BB params
+    uint8_t  bb_id=2, bb_seed=0, bb_morph=128;
+    // FB params
+    FbSt     fst;
+    uint8_t  fb_id=0;
+    float    fhz=110.f, fbody=.5f;
+    // DSP
+    float    lp=0.f;
+    int32_t  dcx=0,dcy=0;
+    float    fdcx=0,fdcy=0;
 
     void randomize(){
-        bfa=(uint8_t)(rng_next()%17u); bfb=(uint8_t)(rng_next()%17u);
-        bmorph=(uint8_t)(rng_next()>>24); brate=(uint16_t)(1u+rng_next()%3u);
-        bseed=(uint8_t)(rng_next()>>24);
-        falgo=(uint8_t)(rng_next()%12u);
-        fhz=55.f*powf(2.f,rng_f()*4.f);
-        fbody=.15f+rng_f()*.70f;
-        fst=FbSt{};
+        is_fb  = (rng_next()&1u) != 0;  // 50% chance BB o FB
+        bb_id  = (uint8_t)(rng_next()%12u);
+        bb_seed= (uint8_t)(rng_next()>>24);
+        bb_morph=(uint8_t)(rng_next()>>24);
+        fb_id  = (uint8_t)(rng_next()%12u);
+        fhz    = 55.f*powf(2.f, rng_f()*4.f);
+        fbody  = .15f+rng_f()*.70f;
+        fst    = FbSt{};
+        lp=0.f; dcx=0; dcy=0; fdcx=0; fdcy=0;
     }
 
-    // Genera BB y FB por separado (para morph de parámetros)
-    float bb_sample(uint32_t t){
-        const uint32_t ts=t/(brate?brate:1u);
-        uint8_t va=bbf(bfa,ts,bseed),vb=bbf(bfb,ts^(uint32_t)(bseed*0x55u),bseed^0xA5u);
-        uint8_t raw=(uint8_t)(((uint16_t)va*(255u-bmorph)+(uint16_t)vb*bmorph)>>8);
-        float bb=float((int8_t)(raw^0x80u))*(1.f/128.f);
-        lp+=0.05f*(bb-lp); bb=lp*.65f+bb*.35f;
-        int32_t s32=(int32_t)(bb*32767.f),y=s32-dcx+((dcy*252)>>8); dcx=s32;dcy=y;
-        return float(y)*(1.f/32767.f);
-    }
+    // Genera L y R separados para imagen stereo
+    // macro1 → hz (55..880Hz),  macro2 → fbody+bb_morph
+    void sample_lr(uint32_t t_tick, float macro1, float macro2,
+                   float& out_l, float& out_r){
+        constexpr float DT=1.f/44100.f;
 
-    float fb_sample(float dt){
-        float fb=fbalgo(fst,dt,fhz,fbody,falgo);
-        float y=fb-fdcx+fdcy*(252.f/256.f); fdcx=fb;fdcy=y; return y;
+        // Aplicar macros
+        float hz_use   = 55.f*powf(2.f, macro1*4.f);
+        float body_use = clamp01(macro2);
+        uint8_t morph_use=(uint8_t)(macro2*255.f);
+
+        if(!is_fb){
+            // ── BYTEBEAT ──────────────────────────────────────────
+            // Usar t_tick del BPM master — sincronizado
+            uint8_t raw_l = bbf(bb_id, t_tick, bb_seed);
+            // Canal R: t_tick+1 para micro-offset → tiny stereo difference
+            uint8_t raw_r = bbf(bb_id, t_tick+1u, bb_seed);
+
+            // Mezcla bb_morph con una variante
+            uint8_t alt_l = bbf((bb_id+3u)%12u, t_tick, bb_seed^0x55u);
+            uint8_t alt_r = bbf((bb_id+3u)%12u, t_tick+1u, bb_seed^0x55u);
+            raw_l=(uint8_t)(((uint16_t)raw_l*(255u-morph_use)+(uint16_t)alt_l*morph_use)>>8);
+            raw_r=(uint8_t)(((uint16_t)raw_r*(255u-morph_use)+(uint16_t)alt_r*morph_use)>>8);
+
+            float bbl=float((int8_t)(raw_l^0x80u))*(1.f/128.f);
+            float bbr=float((int8_t)(raw_r^0x80u))*(1.f/128.f);
+
+            // LP — cutoff controlado por macro2 (más cuerpo = más abierto)
+            float lc=0.03f+body_use*0.10f;
+            lp+=lc*(bbl-lp); bbl=lp*.58f+bbl*.42f;
+            // R tiene su propio LP implícito (compartimos lp por simpleza)
+            bbr=lp*.58f+bbr*.42f;
+
+            // DC blocker (L)
+            int32_t s32=(int32_t)(bbl*32767.f);
+            int32_t y=s32-dcx+((dcy*252)>>8); dcx=s32;dcy=y;
+            out_l=float(y)*(1.f/32767.f);
+            // R aproximado
+            s32=(int32_t)(bbr*32767.f);
+            y=s32-dcx+((dcy*252)>>8);
+            out_r=float(y)*(1.f/32767.f);
+
+        } else {
+            // ── FLOATBEAT ─────────────────────────────────────────
+            // L: hz normal, R: hz+3 cents detune → chorus sutil
+            float hz_r=hz_use*1.00174f;  // 3 cents = 2^(3/1200)
+
+            // Necesitamos dos FbSt para L y R — usamos fst para L
+            // y un offset de fase para R (simula segundo oscilador)
+            FbSt fst_r=fst;
+            fst_r.t+=0.007f;  // 7ms de offset de fase → efecto Haas en FB
+
+            float fl=fbalgo(fst,  DT, hz_use, body_use, fb_id, 1.f);
+            float fr=fbalgo(fst_r,DT, hz_r,   body_use, fb_id, 1.f);
+
+            // DC blocker L
+            float fly=fl-fdcx+fdcy*(252.f/256.f); fdcx=fl;fdcy=fly;
+            out_l=fly;
+
+            // DC blocker R (usa mismos coefs — ok para aproximación)
+            float fry=fr-fdcx+fdcy*(252.f/256.f);
+            out_r=fry;
+        }
     }
 };
 
-// ── Synth con morph real de parámetros ───────────────────────────
-// Zona 0.0-0.3: bytebeat puro de voz A
-// Zona 0.3-0.7: morph DENTRO del espacio bytebeat: interpola fa,fb,morph,rate
-//               entre voz A y voz B usando el mismo t
-//               + fade gradual del floatbeat de B entrando
-// Zona 0.7-1.0: floatbeat puro de voz B
-struct Synth{
-    Voice va,vb;
-    float xfade=1.f;      // crossfade de randomize
-    int   active_new=0;   // 0=va es nueva, 1=vb es nueva
+// ── STEREO PAN LFO ────────────────────────────────────────────────
+// Dos LFOs lentos e independientes para paneo suave de cada voz
+struct PanLFO {
+    float ph=0.f;
+    float rate;     // Hz
+    float depth;    // 0..1 (rango de paneo)
+
+    PanLFO(float r, float d, float init_ph=0.f):rate(r),depth(d),ph(init_ph){}
+
+    // Retorna (pan_l, pan_r) donde pan_l+pan_r puede ser >1 (no es potencia constante)
+    // Usamos ley de paneo simple: L=cos(θ), R=sin(θ) con θ en 0..π/2
+    void get(float dt, float& pan_l, float& pan_r){
+        ph+=dt*rate; if(ph>1.f)ph-=1.f;
+        // centro=0.5, mueve ±depth/2 alrededor del centro
+        float pos=0.5f+fs(ph)*depth*0.5f;  // 0=izq, 1=der
+        // Ley de paneo con potencia constante (aproximación)
+        float angle=pos*1.5708f;  // 0..π/2
+        pan_l=cosf(angle)*1.41421f;
+        pan_r=sinf(angle)*1.41421f;
+    }
+};
+
+// ── HAAS DELAY BUFFER ─────────────────────────────────────────────
+// Delay de 7ms en canal R de voz B → imagen stereo ancha
+constexpr uint32_t HAAS_SAMPLES = (SR*7)/1000;  // 309 samples @ 44100
+static int16_t haas_buf[HAAS_SAMPLES] = {};
+static uint32_t haas_wr = 0;
+
+static int16_t haas_write_read(int16_t in){
+    haas_buf[haas_wr]=in;
+    haas_wr=(haas_wr+1)%HAAS_SAMPLES;
+    return haas_buf[haas_wr];  // read con delay de HAAS_SAMPLES
+}
+
+// ── SYNTH ─────────────────────────────────────────────────────────
+struct Synth {
+    Voice    va, vb;
+    Voice    old_a, old_b;
+    float    xfade=1.f;
+    PanLFO   pan_a{0.27f, 0.35f, 0.0f};   // 0.27Hz, ±35%, fase 0
+    PanLFO   pan_b{0.19f, 0.35f, 0.5f};   // 0.19Hz, ±35%, fase opuesta
 
     void randomize(){
-        // La voz que NO es activa se randomiza y pasa a ser la nueva
-        if(active_new==0){vb.randomize();active_new=1;}
-        else{va.randomize();active_new=0;}
+        old_a=va; old_b=vb;
+        va.randomize(); vb.randomize();
         xfade=0.f;
     }
 
-    int16_t next(uint32_t t, float pot){
+    void next(uint32_t master_sample, float morph, float macro1, float macro2,
+              int16_t& out_l, int16_t& out_r){
         constexpr float DT=1.f/44100.f;
 
-        // Xfade de randomize (50ms)
-        if(xfade<1.f) xfade+=DT*20.f;
-        if(xfade>1.f) xfade=1.f;
+        float al,ar,bl,br;
+        va.sample_lr(tick_a(), macro1, macro2, al, ar);
+        vb.sample_lr(tick_b(), macro1, macro2, bl, br);
 
-        // La voz "anterior" y "nueva" según active_new
-        Voice& v_old = (active_new==0) ? vb : va;
-        Voice& v_new = (active_new==0) ? va : vb;
-
-        float out;
-        const float sm=xfade*xfade*(3.f-2.f*xfade); // smoothstep
-
-        if(pot<0.3f){
-            // ── BB puro — pot controla el LP cutoff del BB ───────
-            float bb=v_new.bb_sample(t);
-            // Aplicar LP adicional controlado por pot (0=muy cerrado, 0.3=normal)
-            float coeff=0.02f+pot*(0.10f/0.3f);
-            v_new.lp+=coeff*(bb-v_new.lp);
-            out=v_new.lp;
-        }
-        else if(pot<0.7f){
-            // ── Morph BB→FB ───────────────────────────────────────
-            // Normalizar a 0..1 dentro de la zona
-            float m=(pot-0.3f)/0.4f;
-
-            // BB morpheado: interpolar los bytes de salida de va y vb
-            // sobre el mismo t — produce una fórmula "híbrida" real
-            const uint32_t ta=t/(v_new.brate?v_new.brate:1u);
-            const uint32_t tb=t/(v_old.brate?v_old.brate:1u);
-            uint8_t ra=(uint8_t)(((uint16_t)bbf(v_new.bfa,ta,v_new.bseed)*(255u-v_new.bmorph)
-                                 +(uint16_t)bbf(v_new.bfb,ta^(uint32_t)(v_new.bseed*0x55u),v_new.bseed^0xA5u)*v_new.bmorph)>>8);
-            uint8_t rb=(uint8_t)(((uint16_t)bbf(v_old.bfa,tb,v_old.bseed)*(255u-v_old.bmorph)
-                                 +(uint16_t)bbf(v_old.bfb,tb^(uint32_t)(v_old.bseed*0x55u),v_old.bseed^0xA5u)*v_old.bmorph)>>8);
-            // Interpolar los bytes directamente en el dominio 0-255
-            uint8_t rmix=(uint8_t)(ra*(1.f-m)+rb*m);
-            float bb=float((int8_t)(rmix^0x80u))*(1.f/128.f);
-            v_new.lp+=0.05f*(bb-v_new.lp); bb=v_new.lp*.65f+bb*.35f;
-            int32_t s32=(int32_t)(bb*32767.f),y=s32-v_new.dcx+((v_new.dcy*252)>>8);
-            v_new.dcx=s32;v_new.dcy=y;
-            float bb_out=float(y)*(1.f/32767.f);
-
-            // FB entra gradualmente en la segunda mitad del morph
-            float fb_amt=m>0.5f?(m-0.5f)*2.f:0.f;
-            float fb_out=v_new.fb_sample(DT);
-            out=lerp(bb_out,fb_out,fb_amt*fb_amt);  // cuadrática — entra suave
-        }
-        else{
-            // ── FB puro — pot transpone hz en tiempo real ─────────
-            float fb=v_new.fb_sample(DT);
-            out=fb;
+        // Crossfade de randomize (100ms)
+        if(xfade<1.f){
+            float f=xfade*xfade*(3.f-2.f*xfade);
+            float oal,oar,obl,obr;
+            old_a.sample_lr(tick_a(), macro1, macro2, oal, oar);
+            old_b.sample_lr(tick_b(), macro1, macro2, obl, obr);
+            al=oal*(1.f-f)+al*f; ar=oar*(1.f-f)+ar*f;
+            bl=obl*(1.f-f)+bl*f; br=obr*(1.f-f)+br*f;
+            xfade+=DT*10.f; if(xfade>1.f)xfade=1.f;
         }
 
-        // Crossfade de randomize sobre el output final
-        if(sm<0.999f){
-            float old_out;
-            if(pot<0.3f)      old_out=v_old.bb_sample(t);
-            else if(pot<0.7f) old_out=v_old.fb_sample(DT);
-            else              old_out=v_old.fb_sample(DT);
-            out=lerp(old_out,out,sm);
-        }
+        // MORPH: 0=A pura, 0.5=50/50, 1=B pura
+        float ml=al*(1.f-morph)+bl*morph;
+        float mr=ar*(1.f-morph)+br*morph;
 
-        out*=0.80f;
-        if(out>.92f)out=.92f; if(out<-.92f)out=-.92f;
-        return(int16_t)(out*32767.f);
+        // Haas delay en canal R de voz B — ensancha la imagen
+        float bl_haas=(float)haas_write_read((int16_t)(bl*32767.f))*(1.f/32767.f);
+        // Aplicar el delay solo en la parte B del mix R
+        mr=ar*(1.f-morph)+bl_haas*morph;
+
+        // PAN LFO independiente por voz
+        float pal,par,pbl,pbr;
+        pan_a.get(DT,pal,par);
+        pan_b.get(DT,pbl,pbr);
+
+        // Mezcla con paneo: A paneada, B paneada al contrario
+        float final_l=(al*pal+bl*pbl)*0.5f*(1.f-morph*0.3f);
+        float final_r=(ar*par+br*pbr)*0.5f*(1.f-morph*0.3f);
+        // Blend con el morph simple (para que morph=0.5 sea claramente híbrido)
+        final_l=final_l*.6f+ml*.4f;
+        final_r=final_r*.6f+mr*.4f;
+
+        final_l*=0.82f; final_r*=0.82f;
+        if(final_l> .92f)final_l= .92f; if(final_l<-.92f)final_l=-.92f;
+        if(final_r> .92f)final_r= .92f; if(final_r<-.92f)final_r=-.92f;
+        out_l=(int16_t)(final_l*32767.f);
+        out_r=(int16_t)(final_r*32767.f);
     }
 };
 
-// ── Pads con crosstalk fix ────────────────────────────────────────
-static uint32_t pad_dis_us=5000, pad_max_us=30000;
-static float    pad_base[4]={};
-static bool     pad_on[4]={},pad_prev[4]={};
-static uint8_t  pad_conf[4]={};
+// ── PADS RESISTIVOS ───────────────────────────────────────────────
+// Circuito: 3V3 → 10kΩ → GPIO, 100nF entre GPIO y GND
+// Con dedo: el pad conecta GPIO a GND a través de R_piel → descarga rápida
+constexpr uint32_t PAD_CHARGE_US=300, PAD_MAX_US=12000;
+static float   pad_base_t=10000.f;
+static bool    pad_on[4]={},pad_prev[4]={};
+static uint8_t pad_conf[4]={};
 
 static uint32_t measure_pad(uint8_t c){
-    // Poner todos los COL como OUTPUT LOW excepto el que medimos
-    // Esto drena la carga parásita de los vecinos → elimina crosstalk
-    for(uint8_t i=0;i<4;++i){
-        if(i!=c){gpio_set_dir(PIN_COL[i],GPIO_OUT);gpio_put(PIN_COL[i],0);}
-    }
-    gpio_set_dir(PIN_COL[c],GPIO_IN);
-    gpio_disable_pulls(PIN_COL[c]);
-
-    gpio_put(PIN_ROW,0); sleep_us(pad_dis_us);
+    gpio_set_dir(PIN_PAD[c],GPIO_OUT); gpio_put(PIN_PAD[c],1);
+    sleep_us(PAD_CHARGE_US);
+    gpio_set_dir(PIN_PAD[c],GPIO_IN); gpio_disable_pulls(PIN_PAD[c]);
     const uint32_t t0=time_us_32();
-    gpio_put(PIN_ROW,1);
-    while(!gpio_get(PIN_COL[c]))
-        if((time_us_32()-t0)>=pad_max_us){gpio_put(PIN_ROW,0);
-            for(uint8_t i=0;i<4;++i){gpio_set_dir(PIN_COL[i],GPIO_IN);gpio_disable_pulls(PIN_COL[i]);}
-            return pad_max_us;}
-    const uint32_t dt=time_us_32()-t0;
-    gpio_put(PIN_ROW,0);
-    // Restaurar todos como INPUT
-    for(uint8_t i=0;i<4;++i){gpio_set_dir(PIN_COL[i],GPIO_IN);gpio_disable_pulls(PIN_COL[i]);}
-    return dt;
+    while(gpio_get(PIN_PAD[c]))
+        if((time_us_32()-t0)>=PAD_MAX_US) return PAD_MAX_US;
+    return time_us_32()-t0;
 }
 
 static void calibrate_pads(){
-    static const uint32_t dis_steps[]={500,1000,2000,5000,10000,20000,50000};
-    for(int s=0;s<7;++s){
-        pad_dis_us=dis_steps[s]; pad_max_us=dis_steps[s]*15;
-        bool ok=true;
-        for(uint8_t c=0;c<4;++c){
-            uint32_t v=0; for(int i=0;i<5;++i)v+=measure_pad(c); v/=5;
-            if(v>=pad_max_us*85/100){ok=false;break;}
-        }
-        if(ok)break;
-    }
-    gpio_put(PIN_ROW,0); sleep_ms(100);
-    for(uint8_t c=0;c<4;++c){
-        uint64_t sum=0; for(int s=0;s<20;++s)sum+=measure_pad(c);
-        pad_base[c]=float(sum/20);
-    }
+    sleep_ms(200);
+    float sum=0; int n=0;
+    for(int i=0;i<8;++i)
+        for(uint8_t c=0;c<4;++c){sum+=float(measure_pad(c));++n;}
+    pad_base_t=sum/float(n);
 }
 
 static void scan_pads(){
-    bool any=pad_on[0]||pad_on[1]||pad_on[2]||pad_on[3];
     for(uint8_t c=0;c<4;++c){
         pad_prev[c]=pad_on[c];
-        const uint32_t raw=measure_pad(c);
-        const float d=float(raw)-pad_base[c];
-        const float on_th=pad_base[c]*0.25f, off_th=pad_base[c]*0.12f;
+        float raw=float(measure_pad(c));
+        // Presión: 0=sin toque (timeout), 1=toque fuerte (rápido)
+        float p=clamp01(1.f-raw/pad_base_t);
         if(!pad_on[c]){
-            if(d>=on_th){if(++pad_conf[c]>=3)pad_on[c]=true;}
-            else{pad_conf[c]=0; if(!any)pad_base[c]+=0.001f*(float(raw)-pad_base[c]);}
+            if(p>0.28f){if(++pad_conf[c]>=2)pad_on[c]=true;}
+            else pad_conf[c]=0;
         } else {
-            if(d<off_th){pad_on[c]=false;pad_conf[c]=0;}
+            if(p<0.12f){pad_on[c]=false;pad_conf[c]=0;}
         }
     }
 }
 
+// ── ADC ───────────────────────────────────────────────────────────
+static float adc_ch(uint ch){adc_select_input(ch);return float(adc_read())/4095.f;}
+
 static void core1_main(){
     gpio_init(PIN_LED);gpio_set_dir(PIN_LED,GPIO_OUT);
-    gpio_init(PIN_ROW);gpio_set_dir(PIN_ROW,GPIO_OUT);gpio_put(PIN_ROW,0);
-    for(uint8_t c=0;c<4;++c){gpio_init(PIN_COL[c]);gpio_set_dir(PIN_COL[c],GPIO_IN);gpio_disable_pulls(PIN_COL[c]);}
-    adc_init();adc_gpio_init(PIN_POT);adc_select_input(0);
+    for(uint8_t c=0;c<4;++c){gpio_init(PIN_PAD[c]);gpio_set_dir(PIN_PAD[c],GPIO_IN);gpio_disable_pulls(PIN_PAD[c]);}
+    adc_init(); adc_gpio_init(26); adc_gpio_init(27); adc_gpio_init(28);
 
     gpio_put(PIN_LED,1); calibrate_pads();
-    gpio_put(PIN_LED,0);sleep_ms(80);gpio_put(PIN_LED,1);sleep_ms(80);gpio_put(PIN_LED,0);
+    // Triple parpadeo = calibración lista
+    for(int i=0;i<3;++i){gpio_put(PIN_LED,0);sleep_ms(120);gpio_put(PIN_LED,1);sleep_ms(120);}
+    gpio_put(PIN_LED,0);
     g_ready=true;
 
-    float pot_s=float(adc_read())/4095.f;
+    float ms=adc_ch(0),m1=adc_ch(1),m2=adc_ch(2);
     while(true){
-        pot_s+=0.06f*(float(adc_read())/4095.f-pot_s);
-        g_pot=pot_s;
+        ms+=0.08f*(adc_ch(0)-ms); g_morph =ms;
+        m1+=0.08f*(adc_ch(1)-m1); g_macro1=m1;
+        m2+=0.08f*(adc_ch(2)-m2); g_macro2=m2;
         scan_pads();
         if(pad_on[0]&&!pad_prev[0]){g_pad_event|=1u;gpio_put(PIN_LED,1);}
         if(!pad_on[0])              gpio_put(PIN_LED,0);
@@ -307,13 +475,23 @@ int main(){
     drums.init(); drums.set_params(0.3f,0.5f,1.0f);
 
     static Synth synth;
-    synth.va.randomize(); synth.vb.randomize();
+    synth.randomize();
 
     multicore_launch_core1(core1_main);
     while(!g_ready)sleep_ms(10);
 
-    uint32_t t=0,cr=0;
+    uint32_t sample=0, cr=0;
     while(true){
+        // BPM tick counter
+        g_tick_accum++;
+        if(g_tick_accum>=TICK_SAMP){
+            g_tick_accum=0;
+            g_tick++;
+            // Reset de fases cada SYNC_TICKS (4 beats) → punto de encuentro
+            // No reseteamos el estado de síntesis, solo la alineación de tick_b
+            // (tick_b = tick_a*2/3 ya garantiza sincronía en LCM=3 beats)
+        }
+
         if(++cr>=32u){
             cr=0;
             const uint8_t ev=g_pad_event;
@@ -324,23 +502,20 @@ int main(){
                 if(ev&4u) drums.trigger(DRUM_SNARE);
                 if(ev&8u) drums.trigger(DRUM_HAT);
             }
-            const float pot=g_pot;
-            drums.set_params(pot*.6f+.1f, .3f+pot*.5f, -1.f);
+            drums.set_params(g_macro1*.6f+.1f, g_macro2*.6f+.2f, -1.f);
         }
 
-        const int16_t ss=synth.next(t,g_pot);
+        int16_t sl=0,sr=0;
+        synth.next(sample, g_morph, g_macro1, g_macro2, sl, sr);
+
         int16_t dl=0,dr=0; int32_t sc=32767;
         drums.process(dl,dr,sc);
 
-        // Mezcla equilibrada: synth a 60%, drums a 90%
-        // El sidechain ya duckea el synth cuando el kick golpea
-        const int32_t sd=((int32_t)ss*sc)>>15;  // synth duckeado
-        // Escalar synth a 60% y drums a 90% antes de sumar
-        int32_t ol=((sd*19661)>>15)+((int32_t)dl*29491>>15);
-        int32_t or_=((sd*19661)>>15)+((int32_t)dr*29491>>15);
-        if(ol> 32767)ol= 32767; if(ol<-32768)ol=-32768;
+        int32_t ol=((int32_t)sl*sc>>15)*19661/32768+(int32_t)dl*29491/32768;
+        int32_t or_=((int32_t)sr*sc>>15)*19661/32768+(int32_t)dr*29491/32768;
+        if(ol>32767)ol=32767; if(ol<-32768)ol=-32768;
         if(or_>32767)or_=32767; if(or_<-32768)or_=-32768;
         i2s_write((int16_t)ol,(int16_t)or_);
-        ++t;
+        ++sample;
     }
 }
