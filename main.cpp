@@ -43,6 +43,7 @@ static volatile float   g_morph=0.5f;   // GP26 — mezcla voz A↔B
 static volatile float   g_filter=0.5f;  // GP27 — LP cutoff global
 static volatile float   g_timbre=0.5f;  // GP28 — body/complejidad
 static volatile uint8_t g_pad_event=0;
+static volatile uint8_t g_pad_state=0;   // bitmask pads activos ahora (para feedback audio)
 static volatile bool    g_ready=false;
 
 static uint32_t g_rng=0xDEADBEEFu;
@@ -240,36 +241,42 @@ struct Synth {
     }
 };
 
-// ── Pads resistivos — técnica correcta para 100kΩ + 100nF ────────
-// Circuito: 3V3 → 100kΩ → GPIO, 100nF entre GPIO y GND
-// Descarga cap a 0V (OUTPUT LOW), luego mide tiempo hasta HIGH (INPUT)
-// Sin dedo: HIGH en ~9.3ms (100kΩ×100nF cargando a 3V3)
-// Con dedo R_skin < ~2MΩ: tarda más o nunca llega → TOQUE detectado
+// ── Pads resistivos — 100kΩ pullup a 3V3, 100nF a GND ───────────
+// TÉCNICA: carga cap (OUTPUT HIGH), descarga (OUTPUT LOW), mide carga
+// Sin dedo: cap sube a HIGH en ~9.3ms (τ=100kΩ×100nF=10ms)
+// Con dedo: R_skin retarda o impide la carga → TIMEOUT = toque
 
-constexpr uint32_t PAD_DISCHARGE_US = 500;    // 500µs descarga a 0V
-constexpr uint32_t PAD_TIMEOUT_US   = 10300;  // 9.3ms baseline + 1ms margen
+// Timeout = 12ms (9.3ms baseline + 2.7ms margen)
+// Detecta R_skin hasta ~300kΩ (manos normales/secas)
+constexpr uint32_t PAD_CHARGE_US   = 300;    // carga inicial a HIGH
+constexpr uint32_t PAD_DISCH_US    = 800;    // descarga a LOW antes de medir
+constexpr uint32_t PAD_TIMEOUT_US  = 12000;  // 12ms — ajustar si falsos triggers
 
 static bool    pad_on[4]={},pad_prev[4]={};
 static uint8_t pad_conf[4]={};
 
 static bool measure_pad_touched(uint8_t c){
-    // 1. Descarga el cap a 0V
+    // Paso 1: cargar cap a HIGH (OUTPUT HIGH, la fuente del GPIO carga rápido)
     gpio_set_dir(PIN_PAD[c], GPIO_OUT);
-    gpio_put(PIN_PAD[c], 0);
-    sleep_us(PAD_DISCHARGE_US);
+    gpio_put(PIN_PAD[c], 1);
+    sleep_us(PAD_CHARGE_US);
 
-    // 2. Suelta el pin → el cap empieza a cargarse a través del 100kΩ
+    // Paso 2: descargar cap a LOW (OUTPUT LOW, el GPIO drena rápido)
+    gpio_put(PIN_PAD[c], 0);
+    sleep_us(PAD_DISCH_US);
+
+    // Paso 3: soltar el pin — el 100kΩ externo carga el cap hacia 3V3
+    // Con dedo: R_skin en paralelo retarda la carga
     gpio_set_dir(PIN_PAD[c], GPIO_IN);
     gpio_disable_pulls(PIN_PAD[c]);
 
-    // 3. Mide tiempo hasta HIGH
+    // Paso 4: medir tiempo hasta HIGH
     const uint32_t t0=time_us_32();
     while(!gpio_get(PIN_PAD[c])){
         if((time_us_32()-t0) >= PAD_TIMEOUT_US)
-            return true;   // TIMEOUT = toque detectado
+            return true;  // no llegó a HIGH → dedo detectado
     }
-    // Si llega a HIGH antes del timeout = sin toque
-    return false;
+    return false;  // llegó a HIGH rápido → sin dedo
 }
 
 static void scan_pads(){
@@ -314,6 +321,11 @@ static void core1_main(){
         g_timbre = adc_direct(2);  // GP28 TIMBRE
 
         scan_pads();
+
+        // Actualizar estado de pads para feedback de audio
+        uint8_t pstate=0;
+        for(uint8_t i=0;i<4;++i) if(pad_on[i]) pstate|=(1u<<i);
+        g_pad_state=pstate;
 
         if(pad_on[0]&&!pad_prev[0]){g_pad_event|=1u;gpio_put(PIN_LED,1);}
         if(!pad_on[0])              gpio_put(PIN_LED,0);
@@ -375,10 +387,17 @@ int main(){
         }
 
         const int16_t ss=synth.next(t,g_morph);
+        // Feedback de pad: mezcla un tono suave cuando hay toque activo
+        // PAD0=pad1=440Hz, PAD1=kick confirm, etc — audible sobre cualquier synth
+        int16_t pad_fb=0;
+        if(g_pad_state){
+            // Pulso de confirmación: tono de 880Hz mezclado al 15%
+            pad_fb=(int16_t)(((t%50)<25)?3000:-3000);
+        }
         int16_t dl=0,dr=0; int32_t sc=32767;
         drums.process(dl,dr,sc);
 
-        const int32_t sd=((int32_t)ss*sc)>>15;
+        const int32_t sd=((int32_t)(ss+pad_fb)*sc)>>15;
         int32_t ol=sd+(int32_t)dl;
         int32_t or_=sd+(int32_t)dr;
         if(ol>32767)ol=32767; if(ol<-32768)ol=-32768;
