@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cmath>
 #include "pico/stdlib.h"
+#include "pico/time.h"
 #include "pico/multicore.h"
 #include "hardware/pio.h"
 #include "hardware/clocks.h"
@@ -145,7 +146,9 @@ struct Voice {
     }
 
     // Produce un sample dado domain (0=BB puro, 1=FB puro)
-    float sample(uint32_t t, float domain){
+    // macro1: 0=graves/lento, 1=agudos/rapido
+    // macro2: 0=seco/simple, 1=lleno/complejo
+    float sample(uint32_t t, float domain, float macro1=0.5f, float macro2=0.5f){
         constexpr float DT=1.f/44100.f;
 
         // Bytebeat
@@ -166,7 +169,13 @@ struct Voice {
         bb=float(y)*(1.f/32767.f);
 
         // Floatbeat
-        float fb=fbalgo(fst,DT,fhz,fbody,falgo);
+        // macro1 mueve la hz: 0=graves(55Hz), 1=agudos(880Hz)
+        // Blend suave entre hz fija del voice y hz del macro
+        float hz_macro = 55.f*powf(2.f, macro1*4.f);
+        float hz_use = fhz*0.4f + hz_macro*0.6f;
+        // macro2 mueve fbody y afecta bb_morph
+        float body_use = fbody*0.4f + macro2*0.6f;
+        float fb=fbalgo(fst,DT,hz_use,body_use,falgo);
         float fy=fb-fdcx+fdcy*(252.f/256.f); fdcx=fb; fdcy=fy; fb=fy;
 
         // Mezcla directa según domain
@@ -192,12 +201,12 @@ struct Synth {
         // 0=BB puro, 1=FB puro
         float domain=morph;
 
-        float s_new=voices[active].sample(t,domain);
+        float s_new=voices[active].sample(t,domain,macro1,macro2);
         float out;
 
         if(xfade<1.f){
             int prev=(active+1)%2;
-            float s_old=voices[prev].sample(t,domain);
+            float s_old=voices[prev].sample(t,domain,macro1,macro2);
             // fade suave con curva cuadrática (más natural que lineal)
             float f=xfade*xfade*(3.f-2.f*xfade);  // smoothstep
             out=s_old*(1.f-f)+s_new*f;
@@ -217,7 +226,7 @@ struct Synth {
 // ── Pads con auto-discharge ───────────────────────────────────────
 // ── Pads resistivos (10kΩ pullup a 3V3, 100nF a GND) ─────────
 static constexpr uint32_t PAD_CHARGE_US = 300;
-static constexpr uint32_t PAD_MAX_US    = 12000;
+static constexpr uint32_t PAD_MAX_US    = 25000;  // 25ms — más margen para cap 100nF
 static float   pad_base_t = 10000.f;
 static bool    pad_on[4]  = {}, pad_prev[4] = {};
 static uint8_t pad_conf[4]= {};
@@ -246,7 +255,7 @@ static void scan_pads(){
         float raw=float(measure_pad(c));
         float p=(raw>=pad_base_t)?0.f:1.f-(raw/pad_base_t);
         if(!pad_on[c]){
-            if(p>0.28f){if(++pad_conf[c]>=2)pad_on[c]=true;}
+            if(p>0.20f){if(++pad_conf[c]>=2)pad_on[c]=true;}  // 20% threshold
             else pad_conf[c]=0;
         } else {
             if(p<0.12f){pad_on[c]=false;pad_conf[c]=0;}
@@ -296,8 +305,10 @@ int main(){
 
     static Synth synth;
     // Randomizar las dos voces al inicio para tener algo que escuchar
-    synth.voices[0].randomize(0.3f);
-    synth.voices[1].randomize(0.7f);
+    // Seed del RNG con el tiempo de arranque para variedad entre resets
+    g_rng ^= to_ms_since_boot(get_absolute_time()) ^ 0xDEAD1234u;
+    synth.voices[0].randomize(rng_f());
+    synth.voices[1].randomize(rng_f());
 
     multicore_launch_core1(core1_main);
     while(!g_ready) sleep_ms(10);
