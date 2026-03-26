@@ -144,7 +144,10 @@ struct Voice {
         bfa   = (uint8_t)(rng_next()%17u);
         bfb   = (uint8_t)(rng_next()%17u);
         bmorph= (uint8_t)(rng_next()>>24);
-        brate = (uint16_t)(1u + rng_next()%4u);
+        // brate controla velocidad del bytebeat — valores musicales
+        // 8=rápido(~5.5Hz patrón), 32=lento(~22Hz), 64=muy lento(~43Hz)
+        static const uint16_t BRATES[]={4,6,8,12,16,24,32,48,64};
+        brate = BRATES[rng_next()%9u];
         bseed = (uint8_t)(rng_next()>>24);
 
         // FB completamente aleatorio
@@ -242,41 +245,68 @@ struct Synth {
 };
 
 // ── Pads resistivos — 100kΩ pullup a 3V3, 100nF a GND ───────────
-// TÉCNICA: carga cap (OUTPUT HIGH), descarga (OUTPUT LOW), mide carga
-// Sin dedo: cap sube a HIGH en ~9.3ms (τ=100kΩ×100nF=10ms)
-// Con dedo: R_skin retarda o impide la carga → TIMEOUT = toque
+// TÉCNICA: medir tiempo REAL de carga vs baseline calibrado
+// Sin dedo: cap sube a HIGH en ~9.3ms (100kΩ×100nF)
+// Con dedo: sube más lento o nunca llega → tiempo > baseline
+// Threshold: 5% más lento que baseline = toque detectado
+// Detecta desde R_skin=700kΩ (manos muy secas) hasta timeout
 
-// Timeout = 12ms (9.3ms baseline + 2.7ms margen)
-// Detecta R_skin hasta ~300kΩ (manos normales/secas)
-constexpr uint32_t PAD_CHARGE_US   = 300;    // carga inicial a HIGH
-constexpr uint32_t PAD_DISCH_US    = 800;    // descarga a LOW antes de medir
-constexpr uint32_t PAD_TIMEOUT_US  = 12000;  // 12ms — ajustar si falsos triggers
+constexpr uint32_t PAD_CHARGE_US  = 300;   // carga inicial
+constexpr uint32_t PAD_DISCH_US   = 800;   // descarga antes de medir
+constexpr uint32_t PAD_TIMEOUT_US = 25000; // 25ms timeout máximo
 
+static float   pad_baseline[4] = {9300,9300,9300,9300}; // µs, calibrado
 static bool    pad_on[4]={},pad_prev[4]={};
 static uint8_t pad_conf[4]={};
 
-static bool measure_pad_touched(uint8_t c){
-    // Paso 1: cargar cap a HIGH (OUTPUT HIGH, la fuente del GPIO carga rápido)
+// Retorna tiempo de carga en µs (PAD_TIMEOUT_US si no llega a HIGH)
+static uint32_t measure_pad_us(uint8_t c){
+    // Cargar cap
     gpio_set_dir(PIN_PAD[c], GPIO_OUT);
     gpio_put(PIN_PAD[c], 1);
     sleep_us(PAD_CHARGE_US);
-
-    // Paso 2: descargar cap a LOW (OUTPUT LOW, el GPIO drena rápido)
+    // Descargar cap
     gpio_put(PIN_PAD[c], 0);
     sleep_us(PAD_DISCH_US);
-
-    // Paso 3: soltar el pin — el 100kΩ externo carga el cap hacia 3V3
-    // Con dedo: R_skin en paralelo retarda la carga
+    // Soltar — 100kΩ externo carga el cap
     gpio_set_dir(PIN_PAD[c], GPIO_IN);
     gpio_disable_pulls(PIN_PAD[c]);
-
-    // Paso 4: medir tiempo hasta HIGH
-    const uint32_t t0=time_us_32();
+    // Medir tiempo hasta HIGH
+    const uint32_t t0 = time_us_32();
     while(!gpio_get(PIN_PAD[c])){
         if((time_us_32()-t0) >= PAD_TIMEOUT_US)
-            return true;  // no llegó a HIGH → dedo detectado
+            return PAD_TIMEOUT_US;
     }
-    return false;  // llegó a HIGH rápido → sin dedo
+    return time_us_32()-t0;
+}
+
+static void calibrate_pads(){
+    // Medir baseline sin dedo: promedio de 20 lecturas
+    sleep_ms(200);
+    for(uint8_t c=0;c<4;++c){
+        uint32_t sum=0;
+        for(int i=0;i<20;++i) sum+=measure_pad_us(c);
+        pad_baseline[c] = float(sum)/20.f;
+    }
+}
+
+static void scan_pads(){
+    for(uint8_t c=0;c<4;++c){
+        pad_prev[c]=pad_on[c];
+        uint32_t t = measure_pad_us(c);
+        // Toque si: tiempo > baseline×1.05 (5% más lento)
+        // O si timeout (nunca llegó a HIGH)
+        bool touched = (float(t) > pad_baseline[c]*1.05f);
+        // Actualizar baseline lentamente cuando no hay toque
+        if(!touched && !pad_on[c])
+            pad_baseline[c] += 0.005f*(float(t)-pad_baseline[c]);
+        if(!pad_on[c]){
+            if(touched){if(++pad_conf[c]>=2)pad_on[c]=true;}
+            else pad_conf[c]=0;
+        } else {
+            if(!touched){pad_on[c]=false;pad_conf[c]=0;}
+        }
+    }
 }
 
 static void scan_pads(){
