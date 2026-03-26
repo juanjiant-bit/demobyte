@@ -1,4 +1,23 @@
-// Dem0!Byt3 V11 — pots directos + macros absolutos + pad fix circuito
+// Dem0!Byt3 V11 — pads 100kΩ/100nF corregidos + motor random + pots extremos
+//
+// PADS: 3V3→100kΩ→GPIO, 100nF entre GPIO y GND
+// Técnica correcta para este circuito:
+//   1. OUTPUT LOW 500µs → descarga cap a 0V
+//   2. INPUT (sin pull interno) → cap carga a través del 100kΩ externo
+//   3. Medir tiempo hasta HIGH
+//   Sin dedo: sube a HIGH en ~9.3ms (τ=10ms, 100kΩ×100nF)
+//   Con dedo: V_ss = 3.3×R_skin/(100k+R_skin)
+//     Si R_skin < 150kΩ: nunca llega a HIGH → TIMEOUT → TOQUE
+//     Si R_skin > 150kΩ: llega a HIGH pero más lento → TOQUE
+//   Threshold: 10.3ms (9.3ms baseline + 1ms margen)
+//   Detecta hasta R_skin = 2MΩ (manos muy secas)
+//
+// POTS: sin slew, rango extremo
+//   MORPH  (GP26): 0=voz A pura, 1=voz B pura
+//   MACRO1 (GP27): transpone pitch en ±1.5 octavas sobre hz base de cada voz
+//   MACRO2 (GP28): timbre — 0=seco/fórmula A, 1=complejo/fórmula B
+//
+// RANDOM: entropía del ADC en cada encendido
 
 #include <cstdint>
 #include <cmath>
@@ -20,8 +39,9 @@ static inline void i2s_write(int16_t l,int16_t r){
 constexpr uint PIN_PAD[4]={8,9,13,14};
 constexpr uint PIN_LED=25,PIN_BCLK=10,PIN_DIN=12,SR=44100;
 
-// Sin slew — lectura directa del ADC, sin filtro
-static volatile float   g_morph=0.5f,g_macro1=0.5f,g_macro2=0.5f;
+static volatile float   g_morph=0.5f;   // GP26 — mezcla voz A↔B
+static volatile float   g_filter=0.5f;  // GP27 — LP cutoff global
+static volatile float   g_timbre=0.5f;  // GP28 — body/complejidad
 static volatile uint8_t g_pad_event=0;
 static volatile bool    g_ready=false;
 
@@ -32,13 +52,16 @@ static inline float clamp01(float x){return x<0?0:(x>1?1:x);}
 
 // ── Osciladores ───────────────────────────────────────────────────
 static inline float fw(float x){x-=(int)x;return x<0?x+1.f:x;}
-static inline float fs(float p){float x=fw(p)*6.28318f-3.14159f,y=x*(1.2732f-0.4053f*fabsf(x));return y*(0.225f*(fabsf(y)-1.f)+1.f);}
+static inline float fs(float p){
+    float x=fw(p)*6.28318f-3.14159f,y=x*(1.2732f-0.4053f*fabsf(x));
+    return y*(0.225f*(fabsf(y)-1.f)+1.f);
+}
 static inline float ft(float p){float x=fw(p);return 4.f*fabsf(x-.5f)-1.f;}
 static inline float fsq(float p,float pw=.5f){return fw(p)<pw?1.f:-1.f;}
 static inline float fclip(float x){return x/(1.f+fabsf(x));}
 static inline float ffold(float x){x=x*.5f+.5f;x-=(int)x;if(x<0)x+=1.f;return x*2.f-1.f;}
 
-// ── Bytebeat 17 fórmulas ─────────────────────────────────────────
+// ── Bytebeat — 17 fórmulas clásicas ──────────────────────────────
 static inline uint8_t bbf(uint8_t id,uint32_t t,uint8_t s){
     switch(id%17u){
     case 0: return(uint8_t)(t*((((t>>10)&42u)&0xFFu)?(((t>>10)&42u)&0xFFu):1u));
@@ -62,7 +85,7 @@ static inline uint8_t bbf(uint8_t id,uint32_t t,uint8_t s){
     }
 }
 
-// ── Floatbeat 12 algos ────────────────────────────────────────────
+// ── Floatbeat — 12 algos con rangos de pitch y timbre variados ───
 static constexpr float PENTA[8]={1.f,1.189f,1.335f,1.498f,1.782f,2.f,2.378f,2.670f};
 static constexpr float BASS[4]={.5f,.749f,1.f,.749f};
 struct FbSt{float t=0,env=0,sph=0;uint32_t lf=0xACE1u;};
@@ -70,7 +93,7 @@ struct FbSt{float t=0,env=0,sph=0;uint32_t lf=0xACE1u;};
 static float fbalgo(FbSt&st,float dt,float hz,float body,uint8_t algo){
     st.t+=dt; if(st.t>4096.f)st.t-=4096.f;
     const float t=st.t;
-    hz=hz<20?20:(hz>3000?3000:hz);
+    hz=hz<15?15:(hz>3000?3000:hz);
     body=clamp01(body);
     switch(algo%12u){
     case 0:{float x=fs(t*hz)*(.5f+.2f*body)+fs(t*hz*.5f)*(.28f+.18f*body)+fs(t*hz*1.5f)*.07f;return fclip(x*.85f);}
@@ -99,75 +122,82 @@ static float fbalgo(FbSt&st,float dt,float hz,float body,uint8_t algo){
     }
 }
 
-// ── Voice — BB o FB, elegida aleatoriamente en cada randomize ────
-// is_fb determina el tipo — completamente aleatorio
+// ── Voice — BB o FB, completamente aleatoria ──────────────────────
 struct Voice {
     bool    is_fb=false;
     // BB
-    uint8_t bfa=2,bfb=10,bmorph=128,bseed=0;
+    uint8_t bfa=2,bfb=5,bmorph=128,bseed=0;
     uint16_t brate=1;
-    // FB
+    // FB — fhz_base es la "nota" de esta voz, invariante al randomize
     FbSt    fst;
     uint8_t falgo=0;
-    float   fhz_base=110.f, fbody_base=.5f;
+    float   fhz_base=110.f;  // pitch base de esta voz — único por voz
+    float   fbody_base=0.5f;
     // DSP
     float   lp=0.f; int32_t dcx=0,dcy=0; float fdcx=0,fdcy=0;
 
     void randomize(){
-        is_fb=(rng_next()&1u)!=0;      // 50% BB, 50% FB — completamente aleatorio
-        bfa  =(uint8_t)(rng_next()%17u);
-        bfb  =(uint8_t)(rng_next()%17u);
-        bmorph=(uint8_t)(rng_next()>>24);
-        brate=(uint16_t)(1u+rng_next()%4u);  // 1-4
-        bseed=(uint8_t)(rng_next()>>24);
-        falgo=(uint8_t)(rng_next()%12u);
-        fhz_base=55.f*powf(2.f,rng_f()*4.f);  // 55-880Hz
-        fbody_base=rng_f();
-        fst=FbSt{};
+        is_fb = (rng_next()&1u)!=0;
+
+        // BB completamente aleatorio
+        bfa   = (uint8_t)(rng_next()%17u);
+        bfb   = (uint8_t)(rng_next()%17u);
+        bmorph= (uint8_t)(rng_next()>>24);
+        brate = (uint16_t)(1u + rng_next()%4u);
+        bseed = (uint8_t)(rng_next()>>24);
+
+        // FB completamente aleatorio
+        falgo      = (uint8_t)(rng_next()%12u);
+        // fhz_base: nota aleatoria entre 40Hz y 800Hz
+        // Escala logarítmica para distribución musical uniforme
+        fhz_base   = 40.f * powf(20.f, rng_f());  // 40Hz → 800Hz
+        fbody_base = rng_f();
+        fst        = FbSt{};
+
+        // Resetear DSP
         lp=0.f; dcx=0; dcy=0; fdcx=0; fdcy=0;
     }
 
-    // macro1: 0=subgrave(27Hz) → 1=agudo(2000Hz) — RANGO ABSOLUTO
-    // macro2: 0=seco/simple    → 1=lleno/complejo
-    float sample(uint32_t t, float domain, float macro1, float macro2){
-        constexpr float DT=1.f/44100.f;
-
-        // ── Macro1 → hz ABSOLUTA (no relativa) ───────────────────
-        // 27Hz a 2000Hz en escala logarítmica
-        float hz = 27.f * powf(74.f, macro1);  // 27Hz → 2000Hz
-
-        // ── Macro2 → body/complejidad ABSOLUTO ────────────────────
-        float body = macro2;
+    // macro1: transpone ±1.5 octavas sobre fhz_base (0=baja, 0.5=original, 1=alta)
+    // macro2: timbre — 0=formula A/cuerpo simple, 1=formula B/cuerpo complejo
+    float sample(uint32_t t, float domain, float timbre){
+        constexpr float DT = 1.f/44100.f;
 
         // ── BB ────────────────────────────────────────────────────
+        // macro1 afecta la velocidad del bytebeat (brate: lento↔rápido)
+        // macro2 hace morph entre fórmula A y B
         const uint32_t ts = t / (brate ? brate : 1u);
         uint8_t va = bbf(bfa, ts, bseed);
         uint8_t vb = bbf(bfb, ts^(uint32_t)(bseed*0x55u), bseed^0xA5u);
-        // macro2 mueve el morph BB: izq=fórmula A, der=fórmula B
-        uint8_t m = (uint8_t)(macro2*255.f);
+        uint8_t m  = (uint8_t)(timbre*255.f);
         uint8_t raw = (uint8_t)(((uint16_t)va*(255u-m)+(uint16_t)vb*m)>>8);
         float bb = float((int8_t)(raw^0x80u))*(1.f/128.f);
 
-        // LP del BB: macro1 controla cutoff (grave=cerrado, agudo=abierto)
-        float lp_c = 0.02f + macro1*0.14f;
+        float lp_c = 0.08f;  // LP del BB fijo — el filter global controla el tono
         lp += lp_c*(bb-lp);
-        bb = lp*.65f + bb*.35f;
+        bb = lp*0.60f + bb*0.40f;
 
-        // DC blocker BB
+        // DC blocker
         int32_t s32=(int32_t)(bb*32767.f);
         int32_t y=s32-dcx+((dcy*252)>>8); dcx=s32;dcy=y;
         bb=float(y)*(1.f/32767.f);
 
         // ── FB ────────────────────────────────────────────────────
+        // macro1 transpone ±1.5 octavas: 0=fhz/2.83, 0.5=fhz, 1=fhz×2.83
+        float hz = fhz_base;
+
+        // macro2 controla body (0=simple, 1=complejo)
+        float body = timbre;
+
         float fb = fbalgo(fst, DT, hz, body, falgo);
         float fy = fb-fdcx+fdcy*(252.f/256.f); fdcx=fb;fdcy=fy; fb=fy;
 
-        // ── Morph: 0=BB, 1=FB ─────────────────────────────────────
+        // ── Morph: 0=BB puro, 1=FB puro ───────────────────────────
         return bb*(1.f-domain) + fb*domain;
     }
 };
 
-// ── Synth — doble voz con crossfade ──────────────────────────────
+// ── Synth con doble voz + crossfade ──────────────────────────────
 struct Synth {
     Voice va, vb;
     Voice old_a, old_b;
@@ -175,22 +205,32 @@ struct Synth {
 
     void randomize(){
         old_a=va; old_b=vb;
-        va.randomize(); vb.randomize();
+        va.randomize();
+        vb.randomize();
+        // Garantizar que las dos voces tengan pitches distintos
+        // Si ambas FB tienen hz muy similares, transponer la voz B
+        if(va.is_fb && vb.is_fb){
+            float ratio = va.fhz_base / vb.fhz_base;
+            if(ratio < 1.33f && ratio > 0.75f){
+                // Muy similares — alejar por al menos una 4ª justa
+                vb.fhz_base *= (rng_f()>0.5f) ? 1.5f : 0.667f;
+            }
+        }
         xfade=0.f;
     }
 
-    int16_t next(uint32_t t, float morph, float macro1, float macro2){
-        float sa = va.sample(t, morph, macro1, macro2);
-        float sb = vb.sample(t, morph, macro1, macro2);
-        float out = (sa+sb)*0.5f;
+    int16_t next(uint32_t t, float morph){
+        float sa = va.sample(t, morph, g_timbre);
+        float sb = vb.sample(t, morph, g_timbre);
+        float out = sa*(1.f-morph) + sb*morph;
 
         if(xfade<1.f){
             float f=xfade*xfade*(3.f-2.f*xfade);
-            float sao=old_a.sample(t,morph,macro1,macro2);
-            float sbo=old_b.sample(t,morph,macro1,macro2);
-            float out_old=(sao+sbo)*0.5f;
+            float sao=old_a.sample(t,morph,g_timbre);
+            float sbo=old_b.sample(t,morph,g_timbre);
+            float out_old=sao*(1.f-morph)+sbo*morph;
             out=out_old*(1.f-f)+out*f;
-            xfade+=1.f/2205.f;
+            xfade+=1.f/2205.f;  // 50ms
             if(xfade>1.f)xfade=1.f;
         }
 
@@ -200,52 +240,44 @@ struct Synth {
     }
 };
 
-// ── Pads resistivos ───────────────────────────────────────────────
-// Circuito: 3V3→10kΩ→GPIO, 100nF entre GPIO y GND
-// El dedo conecta GPIO a GND a través de R_piel
-//
-// TÉCNICA CORREGIDA:
-// 1. OUTPUT HIGH: carga el cap a 3V3 (5ms = 5×RC para 10kΩ×100nF)
-// 2. OUTPUT LOW: el cap descarga a través del pullup externo 10kΩ
-//    (no INPUT — así el pullup no compite con la descarga)
-//    Con dedo: cap descarga TAMBIÉN a través de R_piel → más rápido
-// 3. Cuando el cap llega a ~0.8V (threshold LOW), el GPIO detecta LOW
-//    Esto solo pasa cuando hay dedo (R_piel en paralelo con el pullup)
-//
-// NOTA: sin dedo el cap descarga solo a través del pullup externo
-// que está conectado a 3V3 — así que el cap NO descarga, queda HIGH
-// Con dedo R_piel tira a GND y el cap descarga
-//
-// TÉCNICA FINAL CORRECTA para este circuito:
-// Sin dedo: 10kΩ a 3V3, cap se mantiene HIGH → gpio_get()=HIGH siempre
-// Con dedo: R_piel a GND en paralelo → divisor de tensión
-//   V_pin = 3.3 × R_piel / (10kΩ + R_piel)
-//   R_piel=10kΩ → V=1.65V → puede ser HIGH o LOW (zona gris)
-//   R_piel=1kΩ → V=0.3V → LOW ✓
-//   R_piel=100Ω → V=0.03V → LOW ✓
-// → El GPIO leerá LOW cuando R_piel < ~5kΩ (toque firme)
-// → LECTURA DIGITAL SIMPLE: gpio_get()==LOW → pad tocado
+// ── Pads resistivos — técnica correcta para 100kΩ + 100nF ────────
+// Circuito: 3V3 → 100kΩ → GPIO, 100nF entre GPIO y GND
+// Descarga cap a 0V (OUTPUT LOW), luego mide tiempo hasta HIGH (INPUT)
+// Sin dedo: HIGH en ~9.3ms (100kΩ×100nF cargando a 3V3)
+// Con dedo R_skin < ~2MΩ: tarda más o nunca llega → TOQUE detectado
+
+constexpr uint32_t PAD_DISCHARGE_US = 500;    // 500µs descarga a 0V
+constexpr uint32_t PAD_TIMEOUT_US   = 10300;  // 9.3ms baseline + 1ms margen
 
 static bool    pad_on[4]={},pad_prev[4]={};
 static uint8_t pad_conf[4]={};
 
-static bool read_pad(uint8_t c){
-    // Con el circuito 10kΩ a 3V3 + 100nF a GND:
-    // Sin dedo: pin HIGH (pullup domina)
-    // Con dedo fuerte: pin LOW (R_piel shuntea a GND)
-    // El cap filtra ruido pero no afecta la lectura estática
+static bool measure_pad_touched(uint8_t c){
+    // 1. Descarga el cap a 0V
+    gpio_set_dir(PIN_PAD[c], GPIO_OUT);
+    gpio_put(PIN_PAD[c], 0);
+    sleep_us(PAD_DISCHARGE_US);
+
+    // 2. Suelta el pin → el cap empieza a cargarse a través del 100kΩ
     gpio_set_dir(PIN_PAD[c], GPIO_IN);
-    gpio_disable_pulls(PIN_PAD[c]);  // usar solo el pullup externo
-    sleep_us(100);  // breve settle
-    return !gpio_get(PIN_PAD[c]);   // LOW = tocado → retorna true
+    gpio_disable_pulls(PIN_PAD[c]);
+
+    // 3. Mide tiempo hasta HIGH
+    const uint32_t t0=time_us_32();
+    while(!gpio_get(PIN_PAD[c])){
+        if((time_us_32()-t0) >= PAD_TIMEOUT_US)
+            return true;   // TIMEOUT = toque detectado
+    }
+    // Si llega a HIGH antes del timeout = sin toque
+    return false;
 }
 
 static void scan_pads(){
     for(uint8_t c=0;c<4;++c){
         pad_prev[c]=pad_on[c];
-        bool touched=read_pad(c);
+        bool touched=measure_pad_touched(c);
         if(!pad_on[c]){
-            if(touched){if(++pad_conf[c]>=3)pad_on[c]=true;}
+            if(touched){if(++pad_conf[c]>=2)pad_on[c]=true;}
             else pad_conf[c]=0;
         } else {
             if(!touched){pad_on[c]=false;pad_conf[c]=0;}
@@ -253,7 +285,7 @@ static void scan_pads(){
     }
 }
 
-static float adc_read_direct(uint ch){
+static float adc_direct(uint ch){
     adc_select_input(ch);
     return float(adc_read())/4095.f;
 }
@@ -268,20 +300,21 @@ static void core1_main(){
     adc_init();
     adc_gpio_init(26); adc_gpio_init(27); adc_gpio_init(28);
 
-    // Parpadeo de inicio
+    // Triple parpadeo = listo
     for(int i=0;i<3;++i){
-        gpio_put(PIN_LED,1);sleep_ms(100);
-        gpio_put(PIN_LED,0);sleep_ms(100);
+        gpio_put(PIN_LED,1);sleep_ms(120);
+        gpio_put(PIN_LED,0);sleep_ms(120);
     }
     g_ready=true;
 
     while(true){
-        // Sin slew — lectura directa
-        g_morph  = adc_read_direct(0);
-        g_macro1 = adc_read_direct(1);
-        g_macro2 = adc_read_direct(2);
+        // Sin slew — lectura directa, respuesta inmediata
+        g_morph  = adc_direct(0);  // GP26 MORPH
+        g_filter = adc_direct(1);  // GP27 FILTER
+        g_timbre = adc_direct(2);  // GP28 TIMBRE
 
         scan_pads();
+
         if(pad_on[0]&&!pad_prev[0]){g_pad_event|=1u;gpio_put(PIN_LED,1);}
         if(!pad_on[0])              gpio_put(PIN_LED,0);
         if(pad_on[1]&&!pad_prev[1]) g_pad_event|=2u;
@@ -299,17 +332,24 @@ int main(){
     static DrumEngine drums;
     drums.init(); drums.set_params(0.3f,0.5f,1.0f);
 
-    // Entropía del ADC flotante antes de init completo
+    // Entropía real: ruido térmico del ADC (bits bajos son ruido)
     adc_init(); adc_gpio_init(26);
     uint32_t entropy=0;
     for(int i=0;i<64;++i){
         adc_select_input(0);
         entropy=entropy*1664525u+adc_read()+1013904223u;
     }
-    g_rng^=entropy^0xDEAD1234u;
+    g_rng^=entropy;
 
     static Synth synth;
-    synth.va.randomize(); synth.vb.randomize();
+    static float lp_l=0.f, lp_r=0.f;  // LP global (filter pot)
+    synth.va.randomize();
+    synth.vb.randomize();
+    // Garantizar pitches distintos en FB
+    if(synth.va.is_fb && synth.vb.is_fb){
+        float r=synth.va.fhz_base/synth.vb.fhz_base;
+        if(r<1.33f&&r>0.75f) synth.vb.fhz_base*=1.5f;
+    }
     synth.old_a=synth.va; synth.old_b=synth.vb;
     synth.xfade=1.f;
 
@@ -329,13 +369,12 @@ int main(){
                 if(ev&8u) drums.trigger(DRUM_HAT);
             }
             drums.set_params(
-                g_macro1*.7f+.1f,
-                g_macro2*.7f+.1f,
-                -1.f
-            );
+                clamp01(g_timbre*.8f+.1f),   // drum color
+                clamp01(g_timbre*.6f+.2f),   // drum decay
+                -1.f);
         }
 
-        const int16_t ss=synth.next(t,g_morph,g_macro1,g_macro2);
+        const int16_t ss=synth.next(t,g_morph);
         int16_t dl=0,dr=0; int32_t sc=32767;
         drums.process(dl,dr,sc);
 
@@ -344,6 +383,13 @@ int main(){
         int32_t or_=sd+(int32_t)dr;
         if(ol>32767)ol=32767; if(ol<-32768)ol=-32768;
         if(or_>32767)or_=32767; if(or_<-32768)or_=-32768;
+        // FILTER: LP global — coeff cuadrático para respuesta natural
+        // filter=0.0 → fc≈20Hz (muy oscuro), filter=1.0 → sin filtro
+        {
+            float fc=g_filter*g_filter*0.45f+0.001f;
+            lp_l+=fc*(float(ol)-lp_l); ol=(int32_t)lp_l;
+            lp_r+=fc*(float(or_)-lp_r); or_=(int32_t)lp_r;
+        }
         i2s_write((int16_t)ol,(int16_t)or_);
         ++t;
     }
