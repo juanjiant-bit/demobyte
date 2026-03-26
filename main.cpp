@@ -1,4 +1,5 @@
-// Dem0!Byt3 V11 — motor V5 exacto + 3 pots + pads resistivos 100kΩ/100nF
+// Dem0!Byt3 V12 — motor limpio + 3 pots + pads resistivos 100kΩ/100nF
+// FIX: adc_init() una sola vez + smoothing en pots (α=0.15)
 
 #include <cstdint>
 #include <cmath>
@@ -275,9 +276,11 @@ static void core1_main(){
     g_ready=true;
 
     while(true){
-        g_morph  = adc_read_ch(0);  // sin slew — respuesta inmediata
-        g_filter = adc_read_ch(1);
-        g_timbre = adc_read_ch(2);
+        // Smoothing corto — elimina zipper noise sin lag perceptible
+        static float sm=0.5f, sf=1.f, stm=0.5f;
+        sm  += 0.15f*(adc_read_ch(0)-sm);  g_morph  = sm;
+        sf  += 0.12f*(adc_read_ch(1)-sf);  g_filter = sf;
+        stm += 0.15f*(adc_read_ch(2)-stm); g_timbre = stm;
         scan_pads();
         if(pad_on[0]&&!pad_prev[0]){g_pad_event|=1u;gpio_put(PIN_LED,1);}
         if(!pad_on[0])              gpio_put(PIN_LED,0);
