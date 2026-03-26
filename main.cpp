@@ -188,17 +188,15 @@ struct Synth {
     int   active=0;      // voz activa
     float xfade=1.f;     // 1=voz activa completa, <1=fade entrando
 
-    void randomize(float pot){
+    void randomize(){
         int next=(active+1)%2;
-        voices[next].randomize(pot);
+        voices[next].randomize();
         active=next;
         xfade=0.f;
     }
 
-    int16_t next(uint32_t t, float pot){
-        // pot → domain directo, sin zonas artificiales
-        // 0=BB puro, 1=FB puro
-        float domain=pot;
+    int16_t next(uint32_t t){
+        float domain=g_morph;
 
         float s_new=voices[active].sample(t,domain);
         float out;
