@@ -3,23 +3,40 @@
 ; side_set bit 0 = BCLK
 ; side_set bit 1 = LRCK / WS
 ; out pin        = DIN
-; One FIFO word = one 32-bit I2S slot (sample << 16 for 16-bit audio)
+;
+; Philips I2S, master transmit only.
+; One FIFO word = one 32-bit channel slot, MSB-first.
+;
+; For 16-bit audio over a standard 32-bit I2S slot:
+;   slot_word = sample << 16
+;
+; The extra "pull noblock" after each LRCK transition creates the
+; mandatory 1-bit delay between LRCK edge and the first data bit.
+;
+; Channel format on the wire per slot:
+;   1 dummy bit after LRCK transition
+;   then 31 shifted bits from OSR
+;
+; With a left-aligned 16-bit sample inside a 32-bit word, the DAC sees:
+;   dummy + 16 valid bits + 15 zero padding bits
+;
+; This is the safest minimal Philips-I2S test pattern for PCM5102.
 
 .wrap_target
 public entry_point:
 frame_left:
-    set  x, 30          side 0b00
-    pull noblock        side 0b01
+    set  x, 30          side 0b00 ; LRCK=0, BCLK=0
+    pull noblock        side 0b01 ; LRCK=0, BCLK=1 -> 1-bit Philips delay
 left_bits:
-    out  pins, 1        side 0b00
-    jmp  x-- left_bits  side 0b01
+    out  pins, 1        side 0b00 ; drive next data bit while BCLK low
+    jmp  x-- left_bits  side 0b01 ; clock it on BCLK high
 
 frame_right:
-    set  x, 30          side 0b10
-    pull noblock        side 0b11
+    set  x, 30          side 0b10 ; LRCK=1, BCLK=0
+    pull noblock        side 0b11 ; LRCK=1, BCLK=1 -> 1-bit Philips delay
 right_bits:
-    out  pins, 1        side 0b10
-    jmp  x-- right_bits side 0b11
+    out  pins, 1        side 0b10 ; drive next data bit while BCLK low
+    jmp  x-- right_bits side 0b11 ; clock it on BCLK high
 .wrap
 
 % c-sdk {
@@ -32,6 +49,8 @@ static inline void pcm5102_i2s_program_init(PIO pio,
                                             uint pin_din,
                                             uint pin_bclk,
                                             uint sample_rate) {
+    // pin_bclk     -> BCLK  (sideset bit 0)
+    // pin_bclk + 1 -> LRCK  (sideset bit 1)
     pio_gpio_init(pio, pin_din);
     pio_gpio_init(pio, pin_bclk);
     pio_gpio_init(pio, pin_bclk + 1);
@@ -42,9 +61,13 @@ static inline void pcm5102_i2s_program_init(PIO pio,
     pio_sm_config c = pcm5102_i2s_program_get_default_config(offset);
     sm_config_set_out_pins(&c, pin_din, 1);
     sm_config_set_sideset_pins(&c, pin_bclk);
-    sm_config_set_out_shift(&c, false, true, 32);
+    sm_config_set_out_shift(&c, false, true, 32);  // shift left, autopull 32b, MSB-first on the wire
     sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
 
+    // Standard Philips I2S with 32-bit slots:
+    //   BCLK = sample_rate * 64
+    // This PIO emits one bit over two state-machine instructions,
+    // so SM frequency must be BCLK * 2 = sample_rate * 128.
     const float div = (float)clock_get_hz(clk_sys) / (float)(sample_rate * 128u);
     sm_config_set_clkdiv(&c, div);
 

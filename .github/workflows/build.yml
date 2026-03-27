@@ -1,46 +1,44 @@
-name: Build Pico UF2
+name: Build Dem0!Byt3 V16
 
 on:
   push:
+    branches: [ main, master ]
   pull_request:
-  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v4
-
+      - uses: actions/checkout@v3
+      - name: Cache apt packages
+        uses: actions/cache@v3
+        with:
+          path: /var/cache/apt
+          key: apt-${{ runner.os }}-cmake-gcc-arm
       - name: Install dependencies
         run: |
-          sudo apt update
-          sudo apt install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential
-
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi \
+            libstdc++-arm-none-eabi-newlib python3 git
+      - name: Cache pico-sdk
+        uses: actions/cache@v3
+        with:
+          path: ~/pico-sdk
+          key: pico-sdk-1.5.1
       - name: Clone pico-sdk
         run: |
-          git clone https://github.com/raspberrypi/pico-sdk.git --depth=1
-          cd pico-sdk
-          git submodule update --init
-
-      - name: Set SDK path
-        run: echo "PICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk" >> $GITHUB_ENV
-
-      - name: Configure
-        run: |
-          mkdir build
-          cd build
-          cmake .. -DPICO_BOARD=pico
-
+          if [ ! -d ~/pico-sdk ]; then
+            git clone --depth 1 --branch 1.5.1 https://github.com/raspberrypi/pico-sdk.git ~/pico-sdk
+            cd ~/pico-sdk && git submodule update --init
+          fi
       - name: Build
         run: |
-          cd build
-          make dem0byt3_v13_1 -j4
-
+          export PICO_SDK_PATH=~/pico-sdk
+          mkdir build && cd build
+          cmake .. -DPICO_BOARD=pico
+          make dem0byt3_v16 -j4
       - name: Upload UF2
         uses: actions/upload-artifact@v4
         with:
-          name: uf2
-          path: |
-            build/*.uf2
-            build/**/*.uf2
+          name: Dem0Byt3_V16
+          path: build/*.uf2

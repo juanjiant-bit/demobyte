@@ -10,7 +10,7 @@ endif()
 
 include(${PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 
-project(dem0byt3_v13_1 LANGUAGES C CXX ASM)
+project(dem0byt3_v16 LANGUAGES C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -21,7 +21,7 @@ endif()
 
 pico_sdk_init()
 
-add_executable(dem0byt3_v13_1
+add_executable(dem0byt3_v16
     main.cpp
     audio/audio_output_i2s.cpp
     io/pads.cpp
@@ -30,28 +30,29 @@ add_executable(dem0byt3_v13_1
     master/master.cpp
 )
 
-pico_generate_pio_header(dem0byt3_v13_1
+pico_generate_pio_header(dem0byt3_v16
     ${CMAKE_CURRENT_SOURCE_DIR}/audio/pcm5102_i2s.pio
 )
 
-target_include_directories(dem0byt3_v13_1 PRIVATE
+target_include_directories(dem0byt3_v16 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
 )
 
-target_link_libraries(dem0byt3_v13_1
+target_link_libraries(dem0byt3_v16
     pico_stdlib
     hardware_adc
     hardware_gpio
     hardware_pio
     hardware_clocks
+    hardware_timer
 )
 
-target_compile_options(dem0byt3_v13_1 PRIVATE
+target_compile_options(dem0byt3_v16 PRIVATE
     -O2
     -ffast-math
 )
 
-pico_enable_stdio_usb(dem0byt3_v13_1 1)
-pico_enable_stdio_uart(dem0byt3_v13_1 0)
-pico_add_extra_outputs(dem0byt3_v13_1)
+pico_enable_stdio_usb(dem0byt3_v16 1)
+pico_enable_stdio_uart(dem0byt3_v16 0)
+pico_add_extra_outputs(dem0byt3_v16)
