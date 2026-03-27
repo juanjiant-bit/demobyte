@@ -14,10 +14,19 @@ static inline float norm8(uint32_t x) {
 static inline float clamp01(float x) {
     return std::clamp(x, 0.0f, 1.0f);
 }
+
+static inline float lerp(float a, float b, float t) {
+    return a + (b - a) * t;
+}
+
+static inline float smoothstep(float x) {
+    x = clamp01(x);
+    return x * x * (3.0f - 2.0f * x);
+}
 }
 
 void BytebeatEngine::init() {
-    t_ = 0;
+    phase_ = 0.0f;
     formula_a_ = 0;
     formula_b_ = 1;
     morph_ = 0.0f;
@@ -48,7 +57,6 @@ void BytebeatEngine::set_pressure(float x) {
 }
 
 void BytebeatEngine::randomize_on_boot() {
-    // Mezcla un poco de timing real del arranque para no quedar siempre igual.
     uint32_t s = time_us_32();
     s ^= (s << 7);
     s ^= (s >> 9);
@@ -86,35 +94,130 @@ float BytebeatEngine::softclip(float x) const {
     return x / (1.0f + 0.75f * fabsf(x));
 }
 
-float BytebeatEngine::render() {
-    // Aftertouch (color_) ahora manda el rate/tape.
-    // Más presión en pad1 => color_ más bajo => más lento/oscuro.
-    const uint32_t base_step = drone_on_ ? 1u : 2u;
-    const uint32_t color_step = static_cast<uint32_t>(color_ * 7.0f);
-    t_ += base_step + color_step;
+float BytebeatEngine::zone_shape(float x, int zone, float zf) const {
+    switch (zone) {
+        default:
+        case 0: {
+            // ultra slow / rounded / drifting
+            const float drift = sinf(phase_ * 0.000021f) * (0.08f + 0.12f * zf);
+            return x * (0.62f + 0.18f * zf) + drift;
+        }
+        case 1: {
+            // pulsing lfo-ish with xor-ish tremor
+            const float trem = sinf(phase_ * 0.00017f) * (0.10f + 0.22f * zf);
+            return x * (0.78f + 0.18f * zf) + trem;
+        }
+        case 2: {
+            // musically animated mid-rate
+            const float ring = sinf(phase_ * (0.0008f + 0.0025f * zf));
+            return x * (0.88f + 0.28f * zf) + ring * (0.12f + 0.18f * zf);
+        }
+        case 3: {
+            // fast stepping / crunchy logic
+            return x * (1.00f + 0.45f * zf);
+        }
+        case 4: {
+            // audio-rate harsh / FM-ish
+            const float fm = sinf(phase_ * (0.01f + 0.08f * zf));
+            return x * (1.10f + 0.70f * zf) + fm * (0.14f + 0.26f * zf);
+        }
+    }
+}
 
-    const float a = eval_formula(formula_a_, t_);
-    const float b = eval_formula(formula_b_, t_);
+float BytebeatEngine::render() {
+    // Pot 3 (mod_) is now a huge rate sweep with zones.
+    // zone 0 = ultra slow LFO-long movements
+    // zone 4 = audio-rate / aggressive.
+    const float m = clamp01(mod_);
+    const float live = clamp01(color_);      // aftertouch live color / rate feel
+    const float press = clamp01(pressure_);
+
+    int zone = 0;
+    float zf = 0.0f;
+    float step = 1.0f;
+
+    if (m < 0.20f) {
+        zone = 0;
+        zf = smoothstep(m / 0.20f);
+        step = lerp(0.003f, 0.08f, zf);
+    } else if (m < 0.40f) {
+        zone = 1;
+        zf = smoothstep((m - 0.20f) / 0.20f);
+        step = lerp(0.08f, 0.60f, zf);
+    } else if (m < 0.60f) {
+        zone = 2;
+        zf = smoothstep((m - 0.40f) / 0.20f);
+        step = lerp(0.60f, 3.0f, zf);
+    } else if (m < 0.80f) {
+        zone = 3;
+        zf = smoothstep((m - 0.60f) / 0.20f);
+        step = lerp(3.0f, 20.0f, zf);
+    } else {
+        zone = 4;
+        zf = smoothstep((m - 0.80f) / 0.20f);
+        step = lerp(20.0f, 120.0f, zf);
+    }
+
+    // aftertouch still does the live tape/color behavior on top
+    step *= (0.18f + 1.10f * live);
+    step *= (1.0f - 0.90f * press);
+
+    if (!drone_on_) {
+        step *= 1.6f;
+    }
+
+    phase_ += step;
+    if (phase_ < 0.0f) phase_ = 0.0f;
+
+    // time warps by zone to widen the fan of behaviors
+    uint32_t t0 = static_cast<uint32_t>(phase_);
+    uint32_t ta = t0;
+    uint32_t tb = t0;
+
+    switch (zone) {
+        case 0:
+            ta = static_cast<uint32_t>(phase_ * (1.0f + 0.03f * zf));
+            tb = static_cast<uint32_t>(phase_ * (1.0f + 0.09f * zf));
+            break;
+        case 1:
+            ta = t0 ^ (t0 >> (2 + int(2 * zf)));
+            tb = t0 + static_cast<uint32_t>(phase_ * (0.5f + 0.5f * zf));
+            break;
+        case 2:
+            ta = t0 + static_cast<uint32_t>(phase_ * (1.0f + 0.5f * zf));
+            tb = (t0 ^ (t0 >> 3)) + static_cast<uint32_t>(phase_ * (0.2f + 0.8f * zf));
+            break;
+        case 3:
+            ta = (t0 * (2u + static_cast<uint32_t>(4.0f * zf))) ^ (t0 >> 2);
+            tb = (t0 + (t0 >> 1)) ^ (t0 >> (2 + int(2 * zf)));
+            break;
+        case 4:
+            ta = (t0 * (6u + static_cast<uint32_t>(14.0f * zf))) ^ (t0 >> 1);
+            tb = (t0 * (3u + static_cast<uint32_t>(9.0f * zf))) ^ (t0 >> (1 + int(2 * zf)));
+            break;
+    }
+
+    const float a = eval_formula(formula_a_, ta);
+    const float b = eval_formula(formula_b_, tb);
     float x = a + (b - a) * morph_;
 
-    // color_ (aftertouch) sigue siendo el gesto vivo de brillo/rate
-    const float prev = eval_formula(formula_a_, t_ - 1u);
+    // live color still does the immediate bright/dark tilt
+    const float prev = eval_formula(formula_a_, ta > 0 ? ta - 1u : ta);
     const float hp = x - 0.35f * prev;
-    x = x * (1.0f - 0.65f * color_) + hp * (0.65f * color_);
+    x = x * (1.0f - 0.72f * live) + hp * (0.72f * live);
 
-    // mod_ (antes pote color) ahora controla cuerpo + complejidad
-    const float complexity = 0.75f + 1.85f * mod_;
-    x *= complexity;
+    // zone-dependent shaping over the whole mod sweep
+    x = zone_shape(x, zone, zf);
 
-    // cuerpo low-mid extra con el pote mod
-    const float body = sinf(0.00011f * float(t_)) * (0.10f + 0.28f * mod_);
-    x += body;
+    // body grows in lower/mid zones, aggression grows in upper zones
+    const float body = sinf(0.00011f * phase_) * (0.08f + 0.22f * (1.0f - clamp01(m * 1.2f)));
+    const float air  = sinf(0.0017f * phase_) * (0.02f + 0.16f * clamp01((m - 0.55f) * 2.2f));
+    x += body + air;
 
-    // pressure sigue abriendo drive
-    float drive = 0.80f + 0.35f * color_ + 0.30f * pressure_ + 0.25f * mod_;
+    const float drive = 0.78f + 0.42f * live + 0.24f * press + 0.44f * m;
     x *= drive;
 
-    x *= 0.72f;
+    x *= 0.70f;
     return softclip(x);
 }
 
