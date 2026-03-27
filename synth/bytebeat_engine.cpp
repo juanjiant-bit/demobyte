@@ -20,26 +20,26 @@ static inline float norm8(uint32_t x) {
     const float v = static_cast<float>(x & 255u) * (1.0f / 127.5f) - 1.0f;
     return std::clamp(v, -1.0f, 1.0f);
 }
-static inline float tri01(float p) {
+static inline float tri(float p) {
     p -= floorf(p);
     return 2.0f * fabsf(2.0f * p - 1.0f) - 1.0f;
 }
-static inline float pulse01(float p, float pw) {
+static inline float pulse(float p, float pw) {
     p -= floorf(p);
     return (p < pw) ? 1.0f : -1.0f;
 }
 }
 
 void BytebeatEngine::init() {
-    phase_ = 0.0f;
-    aux_phase_ = 0.0f;
-    aux2_phase_ = 0.0f;
-    perc_env_a_ = 0.0f;
-    perc_env_b_ = 0.0f;
+    motion_phase_ = 0.0f;
+    carrier_phase_ = 0.0f;
+    carrier2_phase_ = 0.0f;
+    env_a_ = 0.0f;
+    env_b_ = 0.0f;
     slot_a_ = {BYTE_LOGIC, 0};
     slot_b_ = {FLOAT_PATTERN, 0};
     morph_ = 0.0f;
-    color_ = 0.0f;
+    color_ = 1.0f;
     mod_ = 0.0f;
     pressure_ = 0.0f;
     drone_on_ = false;
@@ -70,29 +70,24 @@ void BytebeatEngine::randomize_on_boot() {
 }
 
 void BytebeatEngine::next_formula_pair() {
-    auto pick_slot = [this]() -> AlgoSlot {
+    auto pick = [this]() -> AlgoSlot {
         AlgoSlot slot;
         slot.kind = static_cast<AlgoKind>(static_cast<uint8_t>(rand01() * 4.0f) % 4u);
         switch (slot.kind) {
             case BYTE_LOGIC:    slot.variant = static_cast<uint8_t>(rand01() * 6.0f) % 6u; break;
-            case FLOAT_PATTERN: slot.variant = static_cast<uint8_t>(rand01() * 6.0f) % 6u; break;
-            case FLOAT_PERC:    slot.variant = static_cast<uint8_t>(rand01() * 4.0f) % 4u; break;
-            case HYBRID:        slot.variant = static_cast<uint8_t>(rand01() * 5.0f) % 5u; break;
+            case FLOAT_PATTERN: slot.variant = static_cast<uint8_t>(rand01() * 8.0f) % 8u; break;
+            case FLOAT_PERC:    slot.variant = static_cast<uint8_t>(rand01() * 5.0f) % 5u; break;
+            case HYBRID:        slot.variant = static_cast<uint8_t>(rand01() * 6.0f) % 6u; break;
             default:            slot.variant = 0; break;
         }
         return slot;
     };
 
-    AlgoSlot a = pick_slot();
-    AlgoSlot b = pick_slot();
-
-    // evitar mismo slot exacto
-    if (a.kind == b.kind && a.variant == b.variant) {
-        b.variant = static_cast<uint8_t>(b.variant + 1u);
+    slot_a_ = pick();
+    slot_b_ = pick();
+    if (slot_a_.kind == slot_b_.kind && slot_a_.variant == slot_b_.variant) {
+        slot_b_.variant = static_cast<uint8_t>(slot_b_.variant + 1u);
     }
-
-    slot_a_ = a;
-    slot_b_ = b;
 }
 
 float BytebeatEngine::eval_byte_logic(uint8_t variant, uint32_t t) const {
@@ -107,72 +102,50 @@ float BytebeatEngine::eval_byte_logic(uint8_t variant, uint32_t t) const {
     }
 }
 
-float BytebeatEngine::eval_float_pattern(uint8_t variant, float ph, float rate_hz, float live, float zone) const {
-    const float p1 = ph;
-    const float p2 = ph * (0.5f + 0.25f * variant);
-    const float p3 = ph * (1.0f + 0.333f * (variant + 1));
-    const float s1 = sinf(6.2831853f * p1);
-    const float s2 = sinf(6.2831853f * p2);
-    const float s3 = sinf(6.2831853f * p3);
+float BytebeatEngine::eval_float_pattern(uint8_t variant, float ph, float carrier_hz) const {
+    const float p = ph - floorf(ph);
+    const float a = sinf(6.2831853f * p);
+    const float b = sinf(6.2831853f * p * (1.5f + 0.25f * variant));
+    const float c = sinf(6.2831853f * p * (0.5f + 0.12f * variant));
 
-    switch (variant % 6u) {
+    switch (variant % 8u) {
         default:
-        case 0:
-            return (s1 * 0.55f + s2 * 0.35f + s3 * 0.18f);
-        case 1:
-            return ((s1 > s2 ? 1.0f : -1.0f) * 0.55f + s3 * 0.28f);
-        case 2:
-            return (tri01(p1) * 0.52f + sinf(6.2831853f * p2) * 0.33f + pulse01(p3, 0.34f) * 0.12f);
-        case 3:
-            return (sinf(6.2831853f * (p1 + 0.15f * s2)) * 0.62f + s3 * 0.24f);
-        case 4:
-            return ((s1 + s2) * (0.35f + 0.10f * zone) + tri01(p3) * 0.26f);
-        case 5:
-            return ((s1 > 0.15f ? 1.0f : -1.0f) * 0.42f + sinf(6.2831853f * (p2 * 0.75f)) * 0.36f + s3 * 0.12f);
+        case 0: return a * 0.55f + b * 0.28f + c * 0.18f;
+        case 1: return (a > b ? 1.0f : -1.0f) * 0.52f + c * 0.24f;
+        case 2: return tri(p * (1.0f + 0.25f * variant)) * 0.48f + b * 0.24f + pulse(p * 2.0f, 0.33f) * 0.12f;
+        case 3: return sinf(6.2831853f * (p + 0.15f * b)) * 0.60f + c * 0.20f;
+        case 4: return (a + b) * 0.30f + tri(p * 0.75f) * 0.30f + c * 0.16f;
+        case 5: return pulse(p * (1.0f + 0.3f * variant), 0.22f) * 0.40f + sinf(6.2831853f * p * 0.5f) * 0.25f;
+        case 6: return (sinf(6.2831853f * p * 2.0f) > sinf(6.2831853f * p * 3.0f) ? 1.0f : -1.0f) * 0.42f + b * 0.18f;
+        case 7: return sinf(6.2831853f * p * 0.25f) * 0.35f + sinf(6.2831853f * p * 1.25f) * 0.32f + tri(p * 2.0f) * 0.12f;
     }
 }
 
-float BytebeatEngine::eval_float_perc(uint8_t variant, float ph, float rate_hz, float live, float zone) const {
-    float x = 0.0f;
-    switch (variant % 4u) {
+float BytebeatEngine::eval_float_perc(uint8_t variant, float ph, float carrier_hz) const {
+    const float p = ph - floorf(ph);
+    switch (variant % 5u) {
         default:
-        case 0: {
-            const float g = pulse01(ph * 0.5f, 0.08f);
-            x = g * 0.55f + sinf(6.2831853f * ph * 2.0f) * 0.25f;
-            break;
-        }
-        case 1: {
-            const float g = (sinf(6.2831853f * ph) > 0.86f) ? 1.0f : -1.0f;
-            x = g * 0.48f + tri01(ph * 3.0f) * 0.22f;
-            break;
-        }
-        case 2: {
-            const float p = pulse01(ph * 1.25f, 0.18f);
-            x = p * 0.40f + sinf(6.2831853f * ph * 5.0f) * 0.18f;
-            break;
-        }
-        case 3: {
-            const float inter = sinf(6.2831853f * ph) > sinf(6.2831853f * ph * 1.5f) ? 1.0f : -1.0f;
-            x = inter * 0.42f + tri01(ph * 2.5f) * 0.20f;
-            break;
-        }
+        case 0: return pulse(p * 0.5f, 0.10f) * 0.48f + sinf(6.2831853f * p * 2.0f) * 0.18f;
+        case 1: return (sinf(6.2831853f * p) > 0.84f ? 1.0f : -1.0f) * 0.42f + tri(p * 3.0f) * 0.16f;
+        case 2: return pulse(p * 1.25f, 0.18f) * 0.36f + sinf(6.2831853f * p * 5.0f) * 0.14f;
+        case 3: return (sinf(6.2831853f * p) > sinf(6.2831853f * p * 1.5f) ? 1.0f : -1.0f) * 0.36f + tri(p * 2.5f) * 0.14f;
+        case 4: return pulse(p * 2.0f, 0.08f) * 0.32f + sinf(6.2831853f * p * 6.0f) * 0.10f;
     }
-    return x;
 }
 
-float BytebeatEngine::eval_hybrid(uint8_t variant, uint32_t t, float ph, float rate_hz, float live, float zone, float morph) const {
+float BytebeatEngine::eval_hybrid(uint8_t variant, uint32_t t, float ph, float carrier_hz, float morph) const {
     const float bb = eval_byte_logic(variant % 6u, t);
-    const float fp = eval_float_pattern(variant % 6u, ph, rate_hz, live, zone);
-    return lerp(bb, fp, 0.45f + 0.25f * morph);
+    const float fp = eval_float_pattern(variant % 8u, ph, carrier_hz);
+    return lerp(bb, fp, 0.40f + 0.30f * morph);
 }
 
-float BytebeatEngine::eval_slot(const AlgoSlot& slot, float ph, float rate_hz, float live, float zone, float morph) const {
-    const uint32_t t = static_cast<uint32_t>(ph * 65536.0f);
+float BytebeatEngine::eval_slot(const AlgoSlot& slot, float motion_ph, float carrier_hz, float morph) const {
+    const uint32_t t = static_cast<uint32_t>(motion_ph * carrier_hz * 340.0f);
     switch (slot.kind) {
         case BYTE_LOGIC:    return eval_byte_logic(slot.variant, t);
-        case FLOAT_PATTERN: return eval_float_pattern(slot.variant, ph, rate_hz, live, zone);
-        case FLOAT_PERC:    return eval_float_perc(slot.variant, ph, rate_hz, live, zone);
-        case HYBRID:        return eval_hybrid(slot.variant, t, ph, rate_hz, live, zone, morph);
+        case FLOAT_PATTERN: return eval_float_pattern(slot.variant, motion_ph, carrier_hz);
+        case FLOAT_PERC:    return eval_float_perc(slot.variant, motion_ph, carrier_hz);
+        case HYBRID:        return eval_hybrid(slot.variant, t, motion_ph, carrier_hz, morph);
         default:            return 0.0f;
     }
 }
@@ -186,75 +159,47 @@ float BytebeatEngine::render() {
     const float live = clamp01(color_);
     const float press = clamp01(pressure_);
 
-    int zone = 0;
-    float zf = 0.0f;
-    float rate_hz = 0.01f;
+    // Full audible sweep across the whole pot travel:
+    // low end = slow musical motion over audible carriers,
+    // high end = audio-rate complexity.
+    const float motion_hz  = lerp(0.08f, 28.0f, powf(m, 1.1f));
+    const float carrier_hz = lerp(55.0f, 3200.0f, powf(m, 0.85f));
 
-    if (m < 0.20f) {
-        zone = 0;
-        zf = smoothstep(m / 0.20f);
-        rate_hz = lerp(0.01f, 0.15f, zf);      // ultra lento / LFO largo
-    } else if (m < 0.40f) {
-        zone = 1;
-        zf = smoothstep((m - 0.20f) / 0.20f);
-        rate_hz = lerp(0.15f, 1.5f, zf);
-    } else if (m < 0.60f) {
-        zone = 2;
-        zf = smoothstep((m - 0.40f) / 0.20f);
-        rate_hz = lerp(1.5f, 8.0f, zf);
-    } else if (m < 0.80f) {
-        zone = 3;
-        zf = smoothstep((m - 0.60f) / 0.20f);
-        rate_hz = lerp(8.0f, 45.0f, zf);
-    } else {
-        zone = 4;
-        zf = smoothstep((m - 0.80f) / 0.20f);
-        rate_hz = lerp(45.0f, 4200.0f, zf);    // audio rate alto
-    }
+    const float motion_live = motion_hz * (0.18f + 1.00f * live) * (1.0f - 0.88f * press);
+    const float carrier_live = carrier_hz * (0.55f + 0.95f * live);
 
-    // aftertouch = tape/rate-down + color vivo
-    rate_hz *= (0.12f + 1.05f * live);
-    rate_hz *= (1.0f - 0.92f * press);
-    if (!drone_on_) rate_hz *= 1.6f;
-    if (rate_hz < 0.001f) rate_hz = 0.001f;
+    motion_phase_ += motion_live / 44100.0f;
+    carrier_phase_ += carrier_live / 44100.0f;
+    carrier2_phase_ += (carrier_live * (1.25f + 0.75f * morph_)) / 44100.0f;
 
-    phase_ += rate_hz / 44100.0f;
-    aux_phase_ += (rate_hz * (0.5f + 0.9f * zf)) / 44100.0f;
-    aux2_phase_ += (rate_hz * (1.5f + 1.2f * morph_)) / 44100.0f;
+    // sequence-like envelopes from motion phase wraps
+    if (pulse(motion_phase_ * 2.0f, 0.06f) > 0.0f) env_a_ = 1.0f;
+    if (pulse(motion_phase_ * 3.0f + 0.17f, 0.04f) > 0.0f) env_b_ = 1.0f;
+    env_a_ *= 0.9968f;
+    env_b_ *= 0.9958f;
 
-    // reinyectar envs percusivas a baja tasa
-    const float edge_a = sinf(6.2831853f * phase_) > 0.92f ? 1.0f : 0.0f;
-    const float edge_b = sinf(6.2831853f * aux_phase_) > 0.94f ? 1.0f : 0.0f;
-    if (edge_a > 0.5f) perc_env_a_ = 1.0f;
-    if (edge_b > 0.5f) perc_env_b_ = 1.0f;
-    perc_env_a_ *= 0.9975f;
-    perc_env_b_ *= 0.9965f;
-
-    const float a = eval_slot(slot_a_, phase_, rate_hz, live, zf, morph_);
-    const float b = eval_slot(slot_b_, aux_phase_ + 0.21f * sinf(6.2831853f * aux2_phase_), rate_hz, live, zf, morph_);
+    const float a = eval_slot(slot_a_, motion_phase_, carrier_live, morph_);
+    const float b = eval_slot(slot_b_, motion_phase_ * (1.0f + 0.25f * morph_) + 0.19f * sinf(6.2831853f * carrier2_phase_), carrier_live, morph_);
     float x = lerp(a, b, morph_);
 
-    // tilt vivo desde aftertouch
-    const float hp_ref = eval_slot(slot_a_, phase_ - (rate_hz / 44100.0f), rate_hz, live, zf, morph_);
-    const float hp = x - 0.35f * hp_ref;
-    x = x * (1.0f - 0.72f * live) + hp * (0.72f * live);
+    // live color from aftertouch = immediate bright/dark tilt
+    const float a_prev = eval_slot(slot_a_, motion_phase_ - (motion_live / 44100.0f), carrier_live, morph_);
+    const float hp = x - 0.32f * a_prev;
+    x = x * (1.0f - 0.70f * live) + hp * (0.70f * live);
 
-    // comportamiento por zonas
-    if (zone <= 1) {
-        const float body = sinf(6.2831853f * (phase_ * 0.12f)) * (0.18f + 0.20f * (1.0f - m));
-        x += body;
-    } else if (zone == 2) {
-        x += pulse01(aux_phase_ * 0.5f, 0.32f) * 0.10f;
-    } else if (zone == 3) {
-        x += sinf(6.2831853f * aux2_phase_) * 0.12f;
-    } else {
-        x += sinf(6.2831853f * aux2_phase_) * (0.10f + 0.18f * zf);
-    }
+    // more musical behavior as mod rises:
+    // low mod => pulses and sequences
+    // high mod => denser patterns / audio-rate
+    const float body = sinf(6.2831853f * carrier_phase_ * 0.25f) * (0.10f + 0.22f * (1.0f - m));
+    const float seq  = pulse(motion_phase_ * (2.0f + 4.0f * m), 0.18f - 0.08f * m) * (0.06f + 0.10f * (1.0f - m));
+    const float air  = sinf(6.2831853f * carrier2_phase_) * (0.02f + 0.15f * m);
+    x += body + seq + air;
 
-    // usar env percusiva para que floatbeats no sean solo "ruido fm"
-    x += (perc_env_a_ * 0.22f + perc_env_b_ * 0.16f) * (0.3f + 0.4f * (1.0f - m));
+    // percussive structure to keep floatbeats from becoming only FM hiss
+    x += env_a_ * (0.18f + 0.14f * (1.0f - m));
+    x += env_b_ * (0.12f + 0.10f * (1.0f - m));
 
-    const float drive = 0.76f + 0.40f * live + 0.24f * press + 0.34f * m;
+    const float drive = 0.76f + 0.38f * live + 0.22f * press + 0.30f * m;
     x *= drive;
 
     x *= 0.72f;
