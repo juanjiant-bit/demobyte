@@ -1,4 +1,3 @@
-
 #include "pico/stdlib.h"
 #include "hardware/adc.h"
 #include "audio/audio_output_i2s.h"
@@ -11,19 +10,13 @@ using audio::AudioOutputI2S;
 
 namespace {
 constexpr uint LED_PIN = 25;
-constexpr uint ADC_VOL_PIN   = 26; // ADC0
-constexpr uint ADC_MORPH_PIN = 27; // ADC1
-constexpr uint ADC_COLOR_PIN = 28; // ADC2
+
+// Hardware real validado: 1 solo pote en GP26 / ADC0
+constexpr uint ADC_MACRO_PIN = 26;
 
 static inline float clamp01(float x) {
     return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x);
 }
-
-struct Pots {
-    float vol = 0.9f;
-    float morph = 0.0f;
-    float color = 0.45f;
-};
 
 uint16_t read_adc_avg(uint input) {
     adc_select_input(input);
@@ -32,19 +25,11 @@ uint16_t read_adc_avg(uint input) {
     return (uint16_t)(s / 8u);
 }
 
-void update_pots(Pots& p) {
-    static float f0 = 0.9f, f1 = 0.0f, f2 = 0.45f;
-    const float r0 = read_adc_avg(0) / 4095.0f;
-    const float r1 = read_adc_avg(1) / 4095.0f;
-    const float r2 = read_adc_avg(2) / 4095.0f;
-
-    f0 += 0.10f * (r0 - f0);
-    f1 += 0.10f * (r1 - f1);
-    f2 += 0.10f * (r2 - f2);
-
-    p.vol   = clamp01(f0);
-    p.morph = clamp01(f1);
-    p.color = clamp01(f2);
+float read_macro() {
+    static float filt = 0.35f;
+    const float raw = read_adc_avg(0) / 4095.0f;
+    filt += 0.08f * (raw - filt);
+    return clamp01(filt);
 }
 }
 
@@ -56,16 +41,13 @@ int main() {
     gpio_put(LED_PIN, 1);
 
     adc_init();
-    adc_gpio_init(ADC_VOL_PIN);
-    adc_gpio_init(ADC_MORPH_PIN);
-    adc_gpio_init(ADC_COLOR_PIN);
+    adc_gpio_init(ADC_MACRO_PIN);
 
     AudioOutputI2S out;
     io::Pads pads;
     synth::BytebeatEngine synth;
     drums::DrumEngine drums;
     master::Master master;
-    Pots pots;
     synth::EngineParams params;
 
     out.init();
@@ -74,83 +56,51 @@ int main() {
     drums.init();
     master.init();
 
-    // Evita arrancar siempre en el mismo patch fijo
+    // arrancar en un par más musical, no en el patch inicial fijo
     synth.next_formula_pair();
     synth.next_formula_pair();
 
     absolute_time_t next_control = delayed_by_ms(get_absolute_time(), 5);
 
-    // Latch de eventos: no se pierden aunque trigger dure un solo frame de control
-    bool latched_formula = false;
-    bool latched_kick = false;
-    bool latched_snare = false;
-    bool latched_hat = false;
-
-    // Re-armado al soltar, para que cada pad vuelva a poder disparar
-    bool can_fire_formula = true;
-    bool can_fire_kick = true;
-    bool can_fire_snare = true;
-    bool can_fire_hat = true;
+    bool prev_pressed[4] = {false, false, false, false};
 
     while (true) {
         if (absolute_time_diff_us(get_absolute_time(), next_control) <= 0) {
             next_control = delayed_by_ms(next_control, 5);
-
             pads.update();
-            update_pots(pots);
 
             const auto& p1 = pads.get(0);
             const auto& p2 = pads.get(1);
             const auto& p3 = pads.get(2);
             const auto& p4 = pads.get(3);
 
-            // Rearmado por release
-            if (!p1.pressed) can_fire_formula = true;
-            if (!p2.pressed) can_fire_kick = true;
-            if (!p3.pressed) can_fire_snare = true;
-            if (!p4.pressed) can_fire_hat = true;
+            // Trigger derivado del flanco de pressed:
+            // mucho más confiable que depender del trigger interno.
+            const bool trig1 = (p1.pressed && !prev_pressed[0]);
+            const bool trig2 = (p2.pressed && !prev_pressed[1]);
+            const bool trig3 = (p3.pressed && !prev_pressed[2]);
+            const bool trig4 = (p4.pressed && !prev_pressed[3]);
 
-            // Latch de flancos con rearmado simple
-            if (p1.trigger && can_fire_formula) {
-                latched_formula = true;
-                can_fire_formula = false;
+            prev_pressed[0] = p1.pressed;
+            prev_pressed[1] = p2.pressed;
+            prev_pressed[2] = p3.pressed;
+            prev_pressed[3] = p4.pressed;
+
+            if (trig1) {
+                synth.next_formula_pair();
             }
-            if (p2.trigger && can_fire_kick) {
-                latched_kick = true;
-                can_fire_kick = false;
+            if (trig2) {
+                drums.trigger_kick();
             }
-            if (p3.trigger && can_fire_snare) {
-                latched_snare = true;
-                can_fire_snare = false;
+            if (trig3) {
+                drums.trigger_snare();
             }
-            if (p4.trigger && can_fire_hat) {
-                latched_hat = true;
-                can_fire_hat = false;
+            if (trig4) {
+                drums.trigger_hat();
             }
 
-            // Debug visual simple: cualquier trigger prende LED
-            gpio_put(LED_PIN, latched_formula || latched_kick || latched_snare || latched_hat ||
+            gpio_put(LED_PIN, trig1 || trig2 || trig3 || trig4 ||
                               p1.pressed || p2.pressed || p3.pressed || p4.pressed);
-        }
-
-        // Consumir eventos latcheados en el loop de audio
-        if (latched_formula) {
-            // Mantiene drone encendido: este pad randomiza fórmulas, no mutea el motor
-            params.drone = true;
-            synth.next_formula_pair();
-            latched_formula = false;
-        }
-        if (latched_kick) {
-            drums.trigger_kick();
-            latched_kick = false;
-        }
-        if (latched_snare) {
-            drums.trigger_snare();
-            latched_snare = false;
-        }
-        if (latched_hat) {
-            drums.trigger_hat();
-            latched_hat = false;
         }
 
         const auto& p1 = pads.get(0);
@@ -158,20 +108,24 @@ int main() {
         const auto& p3 = pads.get(2);
         const auto& p4 = pads.get(3);
 
-        params.volume = 0.25f + pots.vol * 0.75f;
-        params.morph  = pots.morph;
-        params.color  = pots.color;
-        params.drone  = true;           // siempre corriendo
-        params.tape   = p1.pressure;    // aftertouch tipo tape-stop
+        const float macro = read_macro();
+
+        // Mantener la ruta sonora estable y evitar ADCs flotando.
+        params.drone  = true;
+        params.volume = 0.92f;
+        params.morph  = macro;
+        params.color  = 0.18f + 0.82f * macro;
+        params.tape   = p1.pressure;
 
         float s = synth.render(params);
-        float d = drums.render(pots.color, p2.pressure, p3.pressure, p4.pressure);
+        float d = drums.render(params.color, p2.pressure, p3.pressure, p4.pressure);
 
-        const float duck = 1.0f - drums.kick_env() * 0.52f;
+        // sidechain simple desde kick
+        const float duck = 1.0f - drums.kick_env() * 0.50f;
         s *= duck;
 
-        float mix = s + d * 0.92f;
-        int16_t sample = (int16_t)(master.process(mix, pots.vol) * 32767.0f);
+        const float mix = s + d * 0.92f;
+        const int16_t sample = (int16_t)(master.process(mix, 0.90f) * 32767.0f);
         out.write(sample, sample);
     }
 
