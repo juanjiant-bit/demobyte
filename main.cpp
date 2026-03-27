@@ -19,6 +19,12 @@ static inline int16_t f_to_i16(float x) {
     return static_cast<int16_t>(x * 32767.0f);
 }
 
+static inline float clamp01(float x) {
+    if (x < 0.0f) return 0.0f;
+    if (x > 1.0f) return 1.0f;
+    return x;
+}
+
 int main() {
     stdio_init_all();
 
@@ -29,10 +35,12 @@ int main() {
     g_master.init();
     g_synth.set_drone(g_drone);
 
+    // Cada encendido arranca con fórmulas nuevas.
+    g_synth.randomize_on_boot();
+
     absolute_time_t last = get_absolute_time();
 
-    // Como pressure sí funciona y trigger no, derivamos el trigger
-    // del cruce de umbral de pressure.
+    // Trigger derivado desde pressure mientras termina de resolverse la capa de pads.
     bool prev_gate[4] = {false, false, false, false};
     constexpr float kTrigPressure = 0.16f;
     constexpr float kRelPressure  = 0.08f;
@@ -58,7 +66,6 @@ int main() {
             const bool trig3 = gate3 && !prev_gate[2];
             const bool trig4 = gate4 && !prev_gate[3];
 
-            // histéresis simple para rearmar
             if (p1.pressure < kRelPressure) prev_gate[0] = false; else prev_gate[0] = gate1;
             if (p2.pressure < kRelPressure) prev_gate[1] = false; else prev_gate[1] = gate2;
             if (p3.pressure < kRelPressure) prev_gate[2] = false; else prev_gate[2] = gate3;
@@ -73,16 +80,25 @@ int main() {
             if (trig3) g_drums.trigger_snare();
             if (trig4) g_drums.trigger_hat();
 
+            // Volumen y morph quedan igual
             g_synth.set_morph(controls::morph());
-            g_synth.set_color(controls::color());
-            g_synth.set_pressure(p1.pressure);
+
+            // Aftertouch del pad 1 pasa a ser el "color vivo" / tape-rate.
+            const float at = clamp01(p1.pressure);
+            const float live_color = clamp01(1.0f - 0.92f * at);
+            g_synth.set_color(live_color);
+            g_synth.set_pressure(at);
+
+            // El antiguo pote color ahora pasa a "mod": cuerpo + complejidad.
+            g_synth.set_mod(controls::color());
+
             g_master.set_volume(controls::volume());
         }
 
-        const float color = controls::color();
+        const float mod = controls::color();
         float bb = g_synth.render();
         const float duck = 1.0f - 0.55f * g_drums.kick_env();
-        float drum = g_drums.render(color);
+        float drum = g_drums.render(mod);
 
         float mix = bb * duck * 0.96f + drum * 0.92f;
         mix = g_master.process(mix);

@@ -1,3 +1,4 @@
+
 #pragma once
 #include <stdint.h>
 
@@ -8,9 +9,11 @@ public:
     void init();
     void set_morph(float x);
     void set_color(float x);
+    void set_mod(float x);
     void set_drone(bool on);
     void set_pressure(float x);
     void next_formula_pair();
+    void randomize_on_boot();
     float render();
 
 private:
@@ -22,6 +25,7 @@ private:
     uint8_t formula_b_ = 1;
     float morph_ = 0.0f;
     float color_ = 0.0f;
+    float mod_ = 0.0f;
     float pressure_ = 0.0f;
     bool drone_on_ = false;
     uint32_t lfsr_ = 0x13579BDFu;
