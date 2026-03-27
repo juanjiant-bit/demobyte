@@ -1,3 +1,10 @@
-Reemplazá solo io/pads.cpp por este archivo.
-No hace falta tocar main.cpp ni el motor todavía.
-Este ajuste baja el threshold, acorta confirmación y reduce cooldown para recuperar triggers.
+Reemplazá solo io/pads.cpp en BUENA por este archivo.
+
+Qué cambia:
+- edge detection más directa
+- menos latch permanente
+- release más fácil
+- trigger más fácil de recuperar
+- aftertouch se mantiene
+
+Si todavía no dispara, el siguiente paso sería instrumentar por serial raw/baseline/pressed/trigger.

@@ -9,14 +9,16 @@ namespace {
 PadState g_pads[kNumPads];
 PotState g_pots[kNumPots];
 
-constexpr float kTouchOnRatio = 1.22f;
-constexpr float kTouchHoldRatio = 1.15f;
-constexpr float kTouchOffRatio = 1.08f;
+// Esta versión prioriza recuperar triggers reales sin perder aftertouch.
+// Menos "latch" y más edge detection con histéresis simple.
+constexpr float kTouchOnRatio   = 1.16f;
+constexpr float kTouchHoldRatio = 1.10f;
+constexpr float kTouchOffRatio  = 1.05f;
 
-constexpr uint8_t kConfirmOn = 2;
-constexpr uint8_t kConfirmOff = 2;
+constexpr uint8_t kConfirmOn  = 2;
+constexpr uint8_t kConfirmOff = 1;
 
-constexpr uint16_t kCooldownMs = 12;
+constexpr uint16_t kCooldownMs = 8;
 constexpr uint16_t kMaxCount = 2200;
 
 uint16_t read_cap_once(uint pin) {
@@ -99,7 +101,7 @@ void update_1ms() {
         g_pots[i].raw = raw;
         float target = static_cast<float>(raw) / 4095.0f;
         if (i == 0) {
-            smooth_pot(i, target, 0.06f);  // volume bien estable
+            smooth_pot(i, target, 0.06f);
         } else {
             smooth_pot(i, target, 0.10f);
         }
@@ -107,6 +109,8 @@ void update_1ms() {
 
     for (int i = 0; i < kNumPads; ++i) {
         auto& p = g_pads[i];
+        const bool was_pressed = p.pressed;
+
         p.trigger = false;
         p.release = false;
         if (p.cooldown_ms > 0) --p.cooldown_ms;
@@ -114,34 +118,37 @@ void update_1ms() {
         const uint16_t raw = read_cap_avg(kPadPins[i]);
         p.raw = raw;
 
-        if (!p.pressed) {
-            p.baseline = static_cast<uint16_t>(0.998f * p.baseline + 0.002f * raw);
+        // baseline solo en reposo, más lento para no perseguir al dedo
+        if (!was_pressed) {
+            p.baseline = static_cast<uint16_t>(0.999f * p.baseline + 0.001f * raw);
         }
 
-        const float on_th = p.baseline * kTouchOnRatio;
+        const float on_th   = p.baseline * kTouchOnRatio;
         const float hold_th = p.baseline * kTouchHoldRatio;
-        const float off_th = p.baseline * kTouchOffRatio;
+        const float off_th  = p.baseline * kTouchOffRatio;
 
-        const bool touch_high = raw > on_th;
-        const bool touch_low = raw < off_th;
+        const bool touch_on  = raw > on_th;
+        const bool touch_off = raw < off_th;
 
-        if (!p.pressed) {
-            if (touch_high) {
+        if (!was_pressed) {
+            if (touch_on && p.cooldown_ms == 0) {
                 if (p.on_count < 255) ++p.on_count;
-            } else if (p.on_count > 0) {
-                --p.on_count;
+            } else {
+                p.on_count = 0;
             }
 
             if (p.on_count >= kConfirmOn) {
                 p.pressed = true;
                 p.trigger = true;
-                p.pressure = 0.0f;
+                p.release = false;
                 p.on_count = 0;
                 p.off_count = 0;
                 p.cooldown_ms = kCooldownMs;
+            } else {
+                p.pressed = false;
             }
         } else {
-            if (touch_low) {
+            if (touch_off) {
                 if (p.off_count < 255) ++p.off_count;
             } else {
                 p.off_count = 0;
@@ -153,11 +160,25 @@ void update_1ms() {
                 p.off_count = 0;
                 p.pressure = 0.0f;
             } else {
-                const float span = std::max(1.0f, on_th - hold_th);
-                float pr = (static_cast<float>(raw) - hold_th) / span;
-                pr = std::clamp(pr, 0.0f, 1.0f);
-                p.pressure += 0.16f * (pr - p.pressure);
+                p.pressed = true;
             }
+        }
+
+        // presión expresiva independiente del trigger
+        if (p.pressed) {
+            const float span = std::max(1.0f, on_th - hold_th);
+            float pr = (static_cast<float>(raw) - hold_th) / span;
+            pr = std::clamp(pr, 0.0f, 1.0f);
+            p.pressure += 0.18f * (pr - p.pressure);
+        } else {
+            p.pressure *= 0.65f;
+        }
+
+        // seguridad: si por alguna razón quedó presionado demasiado estable,
+        // el release vuelve a abrir la puerta a un nuevo trigger rápido.
+        if (!p.pressed && !was_pressed) {
+            p.on_count = 0;
+            p.off_count = 0;
         }
     }
 }
@@ -168,7 +189,7 @@ const PadState& pad(int idx) {
 
 float volume() {
     float v = std::clamp(g_pots[0].stable, 0.0f, 1.0f);
-    v = 0.03f + 0.97f * v;  // nunca mute accidental
+    v = 0.03f + 0.97f * v;
     return v;
 }
 
