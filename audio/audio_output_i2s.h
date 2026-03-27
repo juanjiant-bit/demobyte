@@ -14,4 +14,4 @@ private:
     }
 };
 
-}  // namespace audio
+} // namespace audio

@@ -1,9 +1,5 @@
 .program pcm5102_i2s
 .side_set 2
-; side_set bit 0 = BCLK
-; side_set bit 1 = LRCK / WS
-; out pin        = DIN
-; One FIFO word = one 32-bit I2S slot (sample << 16 for 16-bit audio)
 
 .wrap_target
 public entry_point:

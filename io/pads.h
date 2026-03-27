@@ -1,38 +1,29 @@
 #pragma once
-#include "pico/stdlib.h"
-#include <stdint.h>
+#include <cstdint>
 
-namespace controls {
-
-static constexpr int kNumPads = 4;
-static constexpr int kNumPots = 3;
-static constexpr uint kPadPins[kNumPads] = {8, 9, 13, 14};
-static constexpr uint kPotPins[kNumPots] = {26, 27, 28};
+namespace io {
 
 struct PadState {
-    uint16_t raw = 0;
-    uint16_t baseline = 0;
     bool pressed = false;
     bool trigger = false;
     bool release = false;
     float pressure = 0.0f;
+    uint16_t baseline = 0;
+    uint16_t raw = 0;
     uint8_t on_count = 0;
     uint8_t off_count = 0;
-    uint16_t cooldown_ms = 0;
+    uint8_t cooldown = 0;
 };
 
-struct PotState {
-    uint16_t raw = 0;
-    float value = 0.0f;
-    float stable = 0.0f;
+class Pads {
+public:
+    void init();
+    void update();
+    const PadState& get(int index) const { return pads_[index]; }
+
+private:
+    PadState pads_[4];
+    uint16_t read_pad(int idx);
 };
 
-void init();
-void update_1ms();
-
-const PadState& pad(int idx);
-float volume();
-float morph();
-float color();
-
-}  // namespace controls
+} // namespace io
