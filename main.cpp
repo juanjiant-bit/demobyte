@@ -62,7 +62,24 @@ int main() {
             const auto& p2 = controls::pad(1);
             const auto& p3 = controls::pad(2);
             const auto& p4 = controls::pad(3);
+static int dbg_counter = 0;
+dbg_counter++;
 
+if (dbg_counter > 50) { // baja la frecuencia de prints
+    dbg_counter = 0;
+
+    printf("P1 raw=%d base=%d pr=%.2f pres=%d trig=%d\n",
+        p1.raw, p1.baseline, p1.pressure, p1.pressed, p1.trigger);
+
+    printf("P2 raw=%d base=%d pr=%.2f pres=%d trig=%d\n",
+        p2.raw, p2.baseline, p2.pressure, p2.pressed, p2.trigger);
+
+    printf("P3 raw=%d base=%d pr=%.2f pres=%d trig=%d\n",
+        p3.raw, p3.baseline, p3.pressure, p3.pressed, p3.trigger);
+
+    printf("P4 raw=%d base=%d pr=%.2f pres=%d trig=%d\n\n",
+        p4.raw, p4.baseline, p4.pressure, p4.pressed, p4.trigger);
+}
             const float m1 = contact_metric(p1);
             const float m2 = contact_metric(p2);
             const float m3 = contact_metric(p3);
