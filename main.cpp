@@ -6,6 +6,7 @@
 #include "synth/bytebeat_engine.h"
 #include "drums/drum_engine.h"
 #include "master/master.h"
+#include <cmath>
 
 using audio::AudioOutputI2S;
 
@@ -34,6 +35,7 @@ uint16_t read_adc_avg(uint input) {
 
 void update_pots(Pots& p) {
     static float f0 = 0.9f, f1 = 0.0f, f2 = 0.45f;
+
     const float r0 = read_adc_avg(0) / 4095.0f;
     const float r1 = read_adc_avg(1) / 4095.0f;
     const float r2 = read_adc_avg(2) / 4095.0f;
@@ -74,17 +76,10 @@ int main() {
     drums.init();
     master.init();
 
-    // Mantener el arranque musical de V13.1
     synth.next_formula_pair();
     synth.next_formula_pair();
 
     absolute_time_t next_control = delayed_by_ms(get_absolute_time(), 5);
-
-    // IMPORTANTE:
-    // En esta versión no confiamos en p.trigger. El aftertouch ya demostraba
-    // que p.pressed / p.pressure sí funcionan, así que derivamos el trigger
-    // desde el flanco de subida de pressed.
-    bool prev_pressed[4] = {false, false, false, false};
 
     while (true) {
         if (absolute_time_diff_us(get_absolute_time(), next_control) <= 0) {
@@ -98,28 +93,15 @@ int main() {
             const auto& p3 = pads.get(2);
             const auto& p4 = pads.get(3);
 
-            const bool trig1 = (p1.pressed && !prev_pressed[0]);
-            const bool trig2 = (p2.pressed && !prev_pressed[1]);
-            const bool trig3 = (p3.pressed && !prev_pressed[2]);
-            const bool trig4 = (p4.pressed && !prev_pressed[3]);
-
-            prev_pressed[0] = p1.pressed;
-            prev_pressed[1] = p2.pressed;
-            prev_pressed[2] = p3.pressed;
-            prev_pressed[3] = p4.pressed;
-
-            // Pad 1: randomizador de fórmulas
-            if (trig1) {
-                synth.next_formula_pair();
-            }
-
-            // Pads 2/3/4: drums
-            if (trig2) drums.trigger_kick();
-            if (trig3) drums.trigger_snare();
-            if (trig4) drums.trigger_hat();
+            // Si en tu build bueno el trigger directo funciona, mantené esto.
+            // Si no funciona, reemplazalo por edge detect sobre pressed.
+            if (p1.trigger) synth.next_formula_pair();
+            if (p2.trigger) drums.trigger_kick();
+            if (p3.trigger) drums.trigger_snare();
+            if (p4.trigger) drums.trigger_hat();
 
             gpio_put(LED_PIN,
-                trig1 || trig2 || trig3 || trig4 ||
+                p1.trigger || p2.trigger || p3.trigger || p4.trigger ||
                 p1.pressed || p2.pressed || p3.pressed || p4.pressed
             );
         }
@@ -129,17 +111,19 @@ int main() {
         const auto& p3 = pads.get(2);
         const auto& p4 = pads.get(3);
 
-        // Mantener el comportamiento bueno de V13.1:
-        // - 3 potes
-        // - aftertouch del pad 1 como tape/rate-down
+        // Volumen igual que antes
         params.volume = 0.25f + pots.vol * 0.75f;
-        params.morph  = pots.morph;
-        params.color  = pots.color;
-        params.drone  = true;
-        params.tape   = p1.pressure;
+
+        // Rango perceptual mucho más grande para morph y color
+        // sin salir de 0..1 hacia afuera.
+        params.morph = powf(clamp01(pots.morph), 0.45f);
+        params.color = powf(clamp01(pots.color), 0.35f);
+
+        params.drone = true;
+        params.tape  = p1.pressure;
 
         float s = synth.render(params);
-        float d = drums.render(pots.color, p2.pressure, p3.pressure, p4.pressure);
+        float d = drums.render(params.color, p2.pressure, p3.pressure, p4.pressure);
 
         const float duck = 1.0f - drums.kick_env() * 0.52f;
         s *= duck;
