@@ -34,16 +34,14 @@ int main() {
     g_drums.init();
     g_master.init();
     g_synth.set_drone(g_drone);
-
-    // Cada encendido arranca con fórmulas nuevas.
     g_synth.randomize_on_boot();
 
     absolute_time_t last = get_absolute_time();
 
-    // Trigger derivado desde pressure mientras termina de resolverse la capa de pads.
+    // Trigger robusto desde pressure, que es la parte que sí te funciona.
     bool prev_gate[4] = {false, false, false, false};
-    constexpr float kTrigPressure = 0.16f;
-    constexpr float kRelPressure  = 0.08f;
+    constexpr float kTrigPressure = 0.13f;
+    constexpr float kRelPressure  = 0.06f;
 
     while (true) {
         const absolute_time_t now = get_absolute_time();
@@ -66,30 +64,29 @@ int main() {
             const bool trig3 = gate3 && !prev_gate[2];
             const bool trig4 = gate4 && !prev_gate[3];
 
-            if (p1.pressure < kRelPressure) prev_gate[0] = false; else prev_gate[0] = gate1;
-            if (p2.pressure < kRelPressure) prev_gate[1] = false; else prev_gate[1] = gate2;
-            if (p3.pressure < kRelPressure) prev_gate[2] = false; else prev_gate[2] = gate3;
-            if (p4.pressure < kRelPressure) prev_gate[3] = false; else prev_gate[3] = gate4;
+            prev_gate[0] = (p1.pressure > kRelPressure) ? gate1 : false;
+            prev_gate[1] = (p2.pressure > kRelPressure) ? gate2 : false;
+            prev_gate[2] = (p3.pressure > kRelPressure) ? gate3 : false;
+            prev_gate[3] = (p4.pressure > kRelPressure) ? gate4 : false;
 
+            // Pad 1: randomizador principal. No apaga drone.
             if (trig1) {
-                g_drone = !g_drone;
-                g_synth.set_drone(g_drone);
                 g_synth.next_formula_pair();
             }
             if (trig2) g_drums.trigger_kick();
             if (trig3) g_drums.trigger_snare();
             if (trig4) g_drums.trigger_hat();
 
-            // Volumen y morph quedan igual
+            // Morph y volumen quedan como estaban
             g_synth.set_morph(controls::morph());
 
-            // Aftertouch del pad 1 pasa a ser el "color vivo" / tape-rate.
+            // Aftertouch del pad 1 = color/rate/tape vivo
             const float at = clamp01(p1.pressure);
             const float live_color = clamp01(1.0f - 0.92f * at);
             g_synth.set_color(live_color);
             g_synth.set_pressure(at);
 
-            // El antiguo pote color ahora pasa a "mod": cuerpo + complejidad.
+            // Pote 3 = gran barrido de rates + zonas
             g_synth.set_mod(controls::color());
 
             g_master.set_volume(controls::volume());
