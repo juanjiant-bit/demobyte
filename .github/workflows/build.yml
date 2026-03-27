@@ -1,4 +1,4 @@
-name: Build Dem0!Byt3 V11
+name: Build Dem0!Byt3 V6
 on: [push, pull_request, workflow_dispatch]
 jobs:
   build:
@@ -35,10 +35,10 @@ jobs:
           export PICO_SDK_PATH=$GITHUB_WORKSPACE/pico-sdk
           mkdir build && cd build
           cmake .. -DPICO_BOARD=pico
-          make dem0byt3_v11 -j4
+          make dem0byt3_v6 -j4
 
       - name: Upload UF2
         uses: actions/upload-artifact@v4
         with:
-          name: Dem0Byt3_V11
+          name: Dem0Byt3_V6
           path: build/**/*.uf2
