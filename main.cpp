@@ -31,9 +31,11 @@ int main() {
 
     absolute_time_t last = get_absolute_time();
 
-    // Trigger derivado del flanco de subida de pressed.
-    // No dependemos de p.trigger porque en esta versión es lo que está fallando.
-    bool prev_pressed[4] = {false, false, false, false};
+    // Como pressure sí funciona y trigger no, derivamos el trigger
+    // del cruce de umbral de pressure.
+    bool prev_gate[4] = {false, false, false, false};
+    constexpr float kTrigPressure = 0.16f;
+    constexpr float kRelPressure  = 0.08f;
 
     while (true) {
         const absolute_time_t now = get_absolute_time();
@@ -46,15 +48,21 @@ int main() {
             const auto& p3 = controls::pad(2);
             const auto& p4 = controls::pad(3);
 
-            const bool trig1 = p1.pressed && !prev_pressed[0];
-            const bool trig2 = p2.pressed && !prev_pressed[1];
-            const bool trig3 = p3.pressed && !prev_pressed[2];
-            const bool trig4 = p4.pressed && !prev_pressed[3];
+            const bool gate1 = p1.pressure > kTrigPressure;
+            const bool gate2 = p2.pressure > kTrigPressure;
+            const bool gate3 = p3.pressure > kTrigPressure;
+            const bool gate4 = p4.pressure > kTrigPressure;
 
-            prev_pressed[0] = p1.pressed;
-            prev_pressed[1] = p2.pressed;
-            prev_pressed[2] = p3.pressed;
-            prev_pressed[3] = p4.pressed;
+            const bool trig1 = gate1 && !prev_gate[0];
+            const bool trig2 = gate2 && !prev_gate[1];
+            const bool trig3 = gate3 && !prev_gate[2];
+            const bool trig4 = gate4 && !prev_gate[3];
+
+            // histéresis simple para rearmar
+            if (p1.pressure < kRelPressure) prev_gate[0] = false; else prev_gate[0] = gate1;
+            if (p2.pressure < kRelPressure) prev_gate[1] = false; else prev_gate[1] = gate2;
+            if (p3.pressure < kRelPressure) prev_gate[2] = false; else prev_gate[2] = gate3;
+            if (p4.pressure < kRelPressure) prev_gate[3] = false; else prev_gate[3] = gate4;
 
             if (trig1) {
                 g_drone = !g_drone;
@@ -67,7 +75,7 @@ int main() {
 
             g_synth.set_morph(controls::morph());
             g_synth.set_color(controls::color());
-            g_synth.set_pressure(p1.pressed ? p1.pressure : 0.0f);
+            g_synth.set_pressure(p1.pressure);
             g_master.set_volume(controls::volume());
         }
 
