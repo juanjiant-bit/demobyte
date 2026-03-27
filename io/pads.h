@@ -2,11 +2,12 @@
 #include "pico/stdlib.h"
 #include <stdint.h>
 
-namespace pads {
+namespace controls {
 
 static constexpr int kNumPads = 4;
-static constexpr uint kSensePins[kNumPads] = {8, 9, 13, 14};
-static constexpr uint kPotPin = 26;
+static constexpr int kNumPots = 3;
+static constexpr uint kPadPins[kNumPads] = {8, 9, 13, 14};
+static constexpr uint kPotPins[kNumPots] = {26, 27, 28};
 
 struct PadState {
     uint16_t raw = 0;
@@ -20,10 +21,18 @@ struct PadState {
     uint16_t cooldown_ms = 0;
 };
 
+struct PotState {
+    uint16_t raw = 0;
+    float value = 0.0f;
+    float stable = 0.0f;
+};
+
 void init();
 void update_1ms();
 
-const PadState& get(int idx);
-float macro();
+const PadState& pad(int idx);
+float volume();
+float morph();
+float color();
 
-}  // namespace pads
+}  // namespace controls

@@ -1,19 +1,16 @@
 #include "pico/stdlib.h"
-#include "hardware/timer.h"
+#include "audio/audio_output_i2s.h"
 #include "io/pads.h"
 #include "synth/bytebeat_engine.h"
 #include "drums/drum_engine.h"
 #include "master/master.h"
-#include "audio/audio_output_i2s.h"
 
-// Esta base asume que mantenés TU implementación I2S validada previamente.
-// Debe exponer una API equivalente a init() + write(left,right).
 static audio::AudioOutputI2S g_i2s;
 static synth::BytebeatEngine g_synth;
 static drums::DrumEngine g_drums;
 static master::Master g_master;
 
-static bool g_drone = false;
+static bool g_drone = true;
 
 static inline int16_t f_to_i16(float x) {
     if (x > 1.0f) x = 1.0f;
@@ -23,50 +20,51 @@ static inline int16_t f_to_i16(float x) {
 
 int main() {
     stdio_init_all();
-    pads::init();
+
+    controls::init();
     g_i2s.init();
     g_synth.init();
     g_drums.init();
     g_master.init();
+    g_synth.set_drone(g_drone);
 
     absolute_time_t last = get_absolute_time();
 
     while (true) {
-        absolute_time_t now = get_absolute_time();
+        const absolute_time_t now = get_absolute_time();
         if (absolute_time_diff_us(last, now) >= 1000) {
             last = now;
-            pads::update_1ms();
+            controls::update_1ms();
 
-            const auto& p1 = pads::get(0);
-            const auto& p2 = pads::get(1);
-            const auto& p3 = pads::get(2);
-            const auto& p4 = pads::get(3);
+            const auto& p1 = controls::pad(0);
+            const auto& p2 = controls::pad(1);
+            const auto& p3 = controls::pad(2);
+            const auto& p4 = controls::pad(3);
 
             if (p1.trigger) {
                 g_drone = !g_drone;
                 g_synth.set_drone(g_drone);
-                g_synth.randomize_formula();
+                g_synth.next_formula_pair();
             }
             if (p2.trigger) g_drums.trigger_kick();
             if (p3.trigger) g_drums.trigger_snare();
             if (p4.trigger) g_drums.trigger_hat();
 
-            float macro = pads::macro();
-            if (p1.pressed) {
-                macro = macro * 0.75f + p1.pressure * 0.25f;
-            }
-            g_synth.set_macro(macro);
+            g_synth.set_morph(controls::morph());
+            g_synth.set_color(controls::color());
+            g_synth.set_pressure(p1.pressed ? p1.pressure : 0.0f);
+            g_master.set_volume(controls::volume());
         }
 
-        float macro = pads::macro();
+        const float color = controls::color();
         float bb = g_synth.render();
-        float kick_duck = 1.0f - 0.58f * g_drums.kick_env();
-        float drum = g_drums.render(macro);
+        const float duck = 1.0f - 0.55f * g_drums.kick_env();
+        float drum = g_drums.render(color);
 
-        float mix = bb * kick_duck * 0.95f + drum * 0.95f;
+        float mix = bb * duck * 0.96f + drum * 0.92f;
         mix = g_master.process(mix);
 
-        int16_t s = f_to_i16(mix);
+        const int16_t s = f_to_i16(mix);
         g_i2s.write(s, s);
     }
 }

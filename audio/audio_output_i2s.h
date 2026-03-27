@@ -1,5 +1,4 @@
 #pragma once
-
 #include <cstdint>
 
 namespace audio {
@@ -15,4 +14,4 @@ private:
     }
 };
 
-} // namespace audio
+}  // namespace audio

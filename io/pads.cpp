@@ -1,25 +1,26 @@
 #include "io/pads.h"
 #include "hardware/adc.h"
 #include <algorithm>
+#include <cmath>
 
-namespace pads {
+namespace controls {
 namespace {
 PadState g_pads[kNumPads];
-float g_macro = 0.0f;
+PotState g_pots[kNumPots];
 
-constexpr float kTouchOnRatio = 1.34f;
-constexpr float kTouchHoldRatio = 1.20f;
-constexpr float kTouchOffRatio = 1.10f;
-constexpr uint8_t kConfirmOn = 3;
-constexpr uint8_t kConfirmOff = 3;
-constexpr uint16_t kCooldownMs = 55;
-constexpr uint16_t kMaxCount = 2000;
+constexpr float kTouchOnRatio = 1.42f;
+constexpr float kTouchHoldRatio = 1.24f;
+constexpr float kTouchOffRatio = 1.12f;
+constexpr uint8_t kConfirmOn = 4;
+constexpr uint8_t kConfirmOff = 4;
+constexpr uint16_t kCooldownMs = 65;
+constexpr uint16_t kMaxCount = 2200;
 
-uint16_t read_cap(uint pin) {
+uint16_t read_cap_once(uint pin) {
     gpio_init(pin);
     gpio_set_dir(pin, GPIO_OUT);
     gpio_put(pin, 0);
-    sleep_us(3);
+    sleep_us(4);
 
     gpio_set_dir(pin, GPIO_IN);
     gpio_disable_pulls(pin);
@@ -31,34 +32,75 @@ uint16_t read_cap(uint pin) {
     return count;
 }
 
-uint16_t trimmed_calibration(uint pin) {
-    uint16_t vals[16];
-    for (int i = 0; i < 16; ++i) {
-        vals[i] = read_cap(pin);
-        sleep_us(200);
-    }
-    std::sort(vals, vals + 16);
+uint16_t read_cap_avg(uint pin) {
     uint32_t sum = 0;
-    for (int i = 3; i < 13; ++i) sum += vals[i];
-    return static_cast<uint16_t>(sum / 10);
+    for (int i = 0; i < 3; ++i) {
+        sum += read_cap_once(pin);
+    }
+    return static_cast<uint16_t>(sum / 3);
 }
+
+uint16_t trimmed_calibration(uint pin) {
+    uint16_t vals[20];
+    for (int i = 0; i < 20; ++i) {
+        vals[i] = read_cap_avg(pin);
+        sleep_us(180);
+    }
+    std::sort(vals, vals + 20);
+    uint32_t sum = 0;
+    for (int i = 4; i < 16; ++i) sum += vals[i];
+    return static_cast<uint16_t>(sum / 12);
 }
+
+uint16_t read_adc_avg(uint adc_input) {
+    adc_select_input(adc_input);
+    uint32_t sum = 0;
+    for (int i = 0; i < 8; ++i) {
+        sum += adc_read();
+    }
+    return static_cast<uint16_t>(sum / 8);
+}
+
+float smooth_pot(int idx, float target, float alpha) {
+    g_pots[idx].value += alpha * (target - g_pots[idx].value);
+    float diff = fabsf(g_pots[idx].value - g_pots[idx].stable);
+    if (diff > 0.0025f) {
+        g_pots[idx].stable = g_pots[idx].value;
+    }
+    return g_pots[idx].stable;
+}
+}  // namespace
 
 void init() {
     adc_init();
-    adc_gpio_init(kPotPin);
+    for (int i = 0; i < kNumPots; ++i) {
+        adc_gpio_init(kPotPins[i]);
+    }
 
     for (int i = 0; i < kNumPads; ++i) {
-        g_pads[i].baseline = trimmed_calibration(kSensePins[i]);
+        g_pads[i].baseline = trimmed_calibration(kPadPins[i]);
         g_pads[i].raw = g_pads[i].baseline;
+    }
+
+    for (int i = 0; i < kNumPots; ++i) {
+        const uint16_t raw = read_adc_avg(i);
+        g_pots[i].raw = raw;
+        g_pots[i].value = raw / 4095.0f;
+        g_pots[i].stable = g_pots[i].value;
     }
 }
 
 void update_1ms() {
-    adc_select_input(0);
-    uint16_t pot = adc_read();
-    float m = static_cast<float>(pot) / 4095.0f;
-    g_macro += 0.08f * (m - g_macro);
+    for (int i = 0; i < kNumPots; ++i) {
+        const uint16_t raw = read_adc_avg(i);
+        g_pots[i].raw = raw;
+        float target = static_cast<float>(raw) / 4095.0f;
+        if (i == 0) {
+            smooth_pot(i, target, 0.06f);  // volume bien estable
+        } else {
+            smooth_pot(i, target, 0.10f);
+        }
+    }
 
     for (int i = 0; i < kNumPads; ++i) {
         auto& p = g_pads[i];
@@ -66,20 +108,19 @@ void update_1ms() {
         p.release = false;
         if (p.cooldown_ms > 0) --p.cooldown_ms;
 
-        uint16_t raw = read_cap(kSensePins[i]);
+        const uint16_t raw = read_cap_avg(kPadPins[i]);
         p.raw = raw;
 
         if (!p.pressed) {
-            p.baseline = static_cast<uint16_t>(0.995f * p.baseline + 0.005f * raw);
+            p.baseline = static_cast<uint16_t>(0.998f * p.baseline + 0.002f * raw);
         }
 
-        float on_th = p.baseline * kTouchOnRatio;
-        float hold_th = p.baseline * kTouchHoldRatio;
-        float off_th = p.baseline * kTouchOffRatio;
+        const float on_th = p.baseline * kTouchOnRatio;
+        const float hold_th = p.baseline * kTouchHoldRatio;
+        const float off_th = p.baseline * kTouchOffRatio;
 
-        bool touch_high = raw > on_th;
-        bool touch_hold = raw > hold_th;
-        bool touch_low = raw < off_th;
+        const bool touch_high = raw > on_th;
+        const bool touch_low = raw < off_th;
 
         if (!p.pressed) {
             if (touch_high && p.cooldown_ms == 0) {
@@ -91,6 +132,7 @@ void update_1ms() {
             if (p.on_count >= kConfirmOn) {
                 p.pressed = true;
                 p.trigger = true;
+                p.pressure = 0.0f;
                 p.on_count = 0;
                 p.off_count = 0;
                 p.cooldown_ms = kCooldownMs;
@@ -108,21 +150,31 @@ void update_1ms() {
                 p.off_count = 0;
                 p.pressure = 0.0f;
             } else {
-                float span = std::max(1.0f, on_th - hold_th);
-                float pr = (static_cast<float>(raw) - hold_th) / (on_th + span);
-                pr = std::clamp(pr * 2.2f, 0.0f, 1.0f);
-                p.pressure += 0.2f * (pr - p.pressure);
+                const float span = std::max(1.0f, on_th - hold_th);
+                float pr = (static_cast<float>(raw) - hold_th) / span;
+                pr = std::clamp(pr, 0.0f, 1.0f);
+                p.pressure += 0.16f * (pr - p.pressure);
             }
         }
     }
 }
 
-const PadState& get(int idx) {
+const PadState& pad(int idx) {
     return g_pads[idx];
 }
 
-float macro() {
-    return g_macro;
+float volume() {
+    float v = std::clamp(g_pots[0].stable, 0.0f, 1.0f);
+    v = 0.03f + 0.97f * v;  // nunca mute accidental
+    return v;
 }
 
-}  // namespace pads
+float morph() {
+    return std::clamp(g_pots[1].stable, 0.0f, 1.0f);
+}
+
+float color() {
+    return std::clamp(g_pots[2].stable, 0.0f, 1.0f);
+}
+
+}  // namespace controls

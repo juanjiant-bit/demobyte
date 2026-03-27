@@ -35,10 +35,12 @@ jobs:
       - name: Build
         run: |
           cd build
-          make dem0byt3_v13_clean -j4
+          make dem0byt3_v13_1 -j4
 
       - name: Upload UF2
         uses: actions/upload-artifact@v4
         with:
           name: uf2
-          path: build/*.uf2
+          path: |
+            build/*.uf2
+            build/**/*.uf2

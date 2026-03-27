@@ -1,1 +1,0 @@
-Copiá aquí desde tu baseline validado: audio_output_i2s.h, audio_output_i2s.cpp y pcm5102_i2s.pio

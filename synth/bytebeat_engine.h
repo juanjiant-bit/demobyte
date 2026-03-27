@@ -3,19 +3,14 @@
 
 namespace synth {
 
-struct Params {
-    float macro = 0.0f;
-    float morph = 0.0f;
-    float tone = 0.0f;
-    float drive = 0.0f;
-};
-
 class BytebeatEngine {
 public:
     void init();
-    void set_macro(float m);
-    void randomize_formula();
+    void set_morph(float x);
+    void set_color(float x);
     void set_drone(bool on);
+    void set_pressure(float x);
+    void next_formula_pair();
     float render();
 
 private:
@@ -25,8 +20,11 @@ private:
     uint32_t t_ = 0;
     uint8_t formula_a_ = 0;
     uint8_t formula_b_ = 1;
-    Params p_{};
+    float morph_ = 0.0f;
+    float color_ = 0.0f;
+    float pressure_ = 0.0f;
     bool drone_on_ = false;
+    uint32_t lfsr_ = 0x13579BDFu;
 };
 
 }  // namespace synth

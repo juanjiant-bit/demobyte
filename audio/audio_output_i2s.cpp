@@ -1,8 +1,8 @@
-#include "audio_output_i2s.h"
+#include "audio/audio_output_i2s.h"
 
-#include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "pcm5102_i2s.pio.h"
+#include "pico/stdlib.h"
 
 namespace audio {
 namespace {
@@ -18,7 +18,7 @@ bool g_ready = false;
 static inline void write_slot_blocking(PIO pio, uint sm, uint32_t slot_word) {
     pio_sm_put_blocking(pio, sm, slot_word);
 }
-} // namespace
+}  // namespace
 
 void AudioOutputI2S::init() {
     g_sm = pio_claim_unused_sm(g_pio, true);
@@ -38,4 +38,4 @@ void AudioOutputI2S::write(int16_t left, int16_t right) {
     write_slot_blocking(g_pio, g_sm, slot_from_s16(right));
 }
 
-} // namespace audio
+}  // namespace audio
