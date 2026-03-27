@@ -1,15 +1,23 @@
-// Dem0!Byt3 V14 — motor controlable: BB a tasa reducida + antialiasing real
+// Dem0!Byt3 V15 — arquitectura limpia, una voz, controles directos
 //
-// PROBLEMA RESUELTO:
-//   BB con brate=1..3 corre a 44100Hz → armónicos hasta Nyquist → ruido digital
-//   SOLUCIÓN: BRATE 256..2048 (tasa reducida) + LP doble cascada como antialiasing
+// DIAGNÓSTICO DE ITERACIONES ANTERIORES:
+//   V14 bug: BRATE 256-2048 → t_bb avanza 10 Hz → DC blocker = silencio
+//   V13 bug: mix sin escalar → hard clip → ruido
+//   V12 bug: doble adc_init() → ADC corrupto → chirrido
+//   SOLUCIÓN: brate 4-8 (audio rate correcto), LP 800Hz, sin slew en pots
+//
+// ARQUITECTURA: 3 capas separadas
+//   CONTROL:  core1 — ADC + pads → variables volátiles
+//   SYNTH:    core0 — una voz, MORPH/MACRO1/MACRO2 directos, sin slew
+//   OUTPUT:   core0 — mix, boost, softclip
 //
 // POTS:
-//   GP26 MORPH  — 0=BB puro, 0.5=híbrido, 1=FB puro
-//   GP27 MACRO1 — PITCH: transpone fhz ÷4..×4 en tiempo real (4 octavas)
-//   GP28 MACRO2 — RATE+DENSITY: BRATE lento↔rápido + LP abierto↔cerrado
+//   GP26 MORPH  — blend BB↔FB (izq=bytebeat, der=floatbeat)
+//   GP27 MACRO1 — PITCH floatbeat (55-880Hz) + bmorph bytebeat (timbre)
+//   GP28 MACRO2 — BODY floatbeat (0=simple, 1=complejo) + LP BB (grave↔brillante)
+//                 SIN SLEW — respuesta directa
 //
-// PADS: 100kΩ pullup + 100nF a GND, threshold 35%, hold 300ms
+// PADS: threshold calibrado, sin hold mínimo (permite retriggers rápidos)
 
 #include <cstdint>
 #include <cmath>
@@ -32,9 +40,9 @@ static inline void i2s_write(int16_t l,int16_t r){
 constexpr uint PIN_PAD[4]={8,9,13,14};
 constexpr uint PIN_LED=25, PIN_BCLK=10, PIN_DIN=12, SR=44100;
 
-static volatile float   g_morph=0.5f;
-static volatile float   g_macro1=0.5f;
-static volatile float   g_macro2=0.5f;
+static volatile float   g_morph=0.5f;   // GP26
+static volatile float   g_macro1=0.5f;  // GP27 — pitch + bmorph
+static volatile float   g_macro2=0.5f;  // GP28 — body + LP (SIN SLEW)
 static volatile uint8_t g_pad_event=0;
 static volatile bool    g_ready=false;
 
@@ -78,17 +86,17 @@ static inline uint8_t bbf(uint8_t id,uint32_t t,uint8_t s){
     }
 }
 
-// ── Floatbeat 12 algos con drift ─────────────────────────────────
+// ── Floatbeat 12 algos ───────────────────────────────────────────
 static constexpr float PENTA[8]={1.f,1.189f,1.335f,1.498f,1.782f,2.f,2.378f,2.670f};
 static constexpr float BASS[4]={.5f,.749f,1.f,.749f};
 struct FbSt{float t=0,env=0,sph=0,drift=0; uint32_t lf=0xACE1u;};
 
 static float fbalgo(FbSt&st,float dt,float hz,float body,uint8_t algo){
     st.t+=dt; if(st.t>4096.f)st.t-=4096.f;
+    // Drift lento ±6% — da vida sin vibrato obvio
     st.drift+=dt*0.13f; if(st.drift>6.28318f)st.drift-=6.28318f;
     float hzl=hz*(1.f+fs(st.drift*0.15f)*0.06f);
-    hzl=hzl<15?15:(hzl>2200?2200:hzl);
-    body=clampf(body,0,1);
+    hzl=clampf(hzl,15.f,2200.f); body=clampf(body,0.f,1.f);
     const float t=st.t;
     switch(algo%12u){
     case 0:{float x=fs(t*hzl)*(.5f+.2f*body)+fs(t*hzl*.5f)*(.28f+.18f*body)+fs(t*hzl*1.5f)*.07f;return fclip(x*.85f);}
@@ -120,56 +128,46 @@ static float fbalgo(FbSt&st,float dt,float hz,float body,uint8_t algo){
 // ── Voice ─────────────────────────────────────────────────────────
 struct Voice{
     uint8_t  bfa=2, bfb=7, bmorph=128, bseed=0;
-    uint32_t brate=512;   // BRATE alto → tasa reducida → secuencias perceptibles
+    uint16_t brate=5;    // 4-8: audio rate correcto (≈8000-11000 Hz tick rate)
     FbSt     fst;
     uint8_t  falgo=0;
     float    fhz=110.f, fbody=.5f;
-    // LP doble para BB — antialiasing real
-    float    lp1=0.f, lp2=0.f;
-    // DC blocker
-    int32_t  dcx=0, dcy=0;
-    float    fdcx=0, fdcy=0;
-    // fhz suavizada para evitar clicks al cambiar macro1
-    float    fhz_s=110.f;
+    float    lp=0.f;     // LP simple para BB
+    int32_t  dcx=0,dcy=0;
+    float    fdcx=0,fdcy=0;
 
     void randomize(){
         bfa   =(uint8_t)(rng_next()%17u);
         bfb   =(uint8_t)(rng_next()%17u);
         bmorph=(uint8_t)(rng_next()>>24);
-        // BRATE tabla: tasa reducida para secuencias musicales
-        // 256=rápido(~170 ticks/s), 512=medio, 1024=lento, 2048=muy lento
-        static const uint32_t BR[]={256,384,512,768,1024,1536,2048};
-        brate =BR[rng_next()%7u];
+        // brate 4-8: rango que suena musical con las fórmulas clásicas
+        static const uint16_t BR[]={4,5,6,7,8};
+        brate =BR[rng_next()%5u];
         bseed =(uint8_t)(rng_next()>>24);
         falgo =(uint8_t)(rng_next()%12u);
         fhz   =55.f*powf(2.f,rng_f()*4.f);
-        fhz_s =fhz;
         fbody =.2f+rng_f()*.6f;
         fst   =FbSt{};
-        lp1=0.f; lp2=0.f;
-        dcx=0; dcy=0; fdcx=0; fdcy=0;
+        lp=0.f; dcx=0;dcy=0;fdcx=0;fdcy=0;
     }
 
-    // macro1: pitch ÷4..×4  macro2: rate slow↔fast + LP open↔closed
-    float sample(uint32_t master_t, float morph, float macro1, float macro2){
+    float sample(uint32_t t, float morph, float macro1, float macro2){
         constexpr float DT=1.f/44100.f;
 
         // ── BYTEBEAT ─────────────────────────────────────────────
-        // MACRO2 escala el BRATE: 0=×4 (más lento), 1=÷4 (más rápido)
-        float rate_scale = 4.f - macro2*3.75f;  // 4.0→0.25
-        uint32_t eff_rate = (uint32_t)(float(brate)*rate_scale);
-        if(eff_rate<64) eff_rate=64;
-        const uint32_t t_bb = master_t / eff_rate;
-        uint8_t va=bbf(bfa, t_bb, bseed);
-        uint8_t vb=bbf(bfb, t_bb^(uint32_t)(bseed*0x55u), bseed^0xA5u);
-        uint8_t raw=(uint8_t)(((uint16_t)va*(255u-bmorph)+(uint16_t)vb*bmorph)>>8);
+        // MACRO1 afecta bmorph: timbre interno de las dos fórmulas BB
+        uint8_t eff_bmorph=(uint8_t)(bmorph*(1.f-macro1*0.9f) + macro1*0.9f*255.f);
+        const uint32_t ts=t/(brate?brate:1u);
+        uint8_t va=bbf(bfa,ts,bseed);
+        uint8_t vb=bbf(bfb,ts^(uint32_t)(bseed*0x55u),bseed^0xA5u);
+        uint8_t raw=(uint8_t)(((uint16_t)va*(255u-eff_bmorph)+(uint16_t)vb*eff_bmorph)>>8);
         float bb=float((int8_t)(raw^0x80u))*(1.f/128.f);
 
-        // LP doble cascada — MACRO2 controla apertura (0=200Hz, 1=1600Hz)
-        float fc = 0.029f + macro2*0.200f;  // coeff 200Hz→1600Hz
-        lp1 += fc*(bb-lp1);
-        lp2 += fc*(lp1-lp2);  // segunda etapa — -12dB/oct extra
-        bb = lp2;
+        // LP con cutoff controlado por MACRO2 (0=400Hz, 1=2000Hz)
+        // Esto tame el aliasing sin matar el sonido
+        float fc=0.057f+macro2*0.228f;  // 400Hz→2000Hz
+        lp+=fc*(bb-lp);
+        bb=lp;
 
         // DC blocker
         int32_t s32=(int32_t)(bb*32767.f);
@@ -177,67 +175,63 @@ struct Voice{
         bb=float(y)*(1.f/32767.f);
 
         // ── FLOATBEAT ────────────────────────────────────────────
-        // MACRO1 transpone el pitch ÷4..×4 (suavizado para evitar clicks)
-        float hz_target = fhz * (0.25f + macro1*3.75f);
-        hz_target=clampf(hz_target,15.f,3000.f);
-        fhz_s += 0.001f*(hz_target-fhz_s);  // slew lento solo para fb
-        float fb=fbalgo(fst,DT,fhz_s,fbody,falgo);
+        // MACRO1 transpone pitch: 0=55Hz, 0.5=fhz propio, 1=880Hz
+        // Mapeo logarítmico para respuesta musical uniforme
+        float hz_use=55.f*powf(16.f,macro1);  // 55→880Hz en toda la escala
+        hz_use=clampf(hz_use,15.f,3000.f);
+
+        // MACRO2 controla body directo — SIN SLEW
+        float body_use=macro2;
+
+        float fb=fbalgo(fst,DT,hz_use,body_use,falgo);
         float fy=fb-fdcx+fdcy*(252.f/256.f); fdcx=fb;fdcy=fy; fb=fy;
 
-        // ── MORPH ────────────────────────────────────────────────
-        return bb*(1.f-morph) + fb*morph;
+        // MORPH: blend directo BB↔FB
+        return bb*(1.f-morph)+fb*morph;
     }
 };
 
-// ── Synth: crossfade suave entre una voz y la siguiente ──────────
+// ── Synth: una voz activa + crossfade al randomizar ──────────────
 struct Synth{
     Voice cur, prv;
     float xfade=1.f;
 
-    void init(){
-        cur.randomize(); prv=cur;
-    }
+    void init(){cur.randomize(); prv=cur; xfade=1.f;}
 
-    void randomize(){
-        prv=cur;
-        cur.randomize();
-        xfade=0.f;
-    }
+    void randomize(){prv=cur; cur.randomize(); xfade=0.f;}
 
     int16_t next(uint32_t t, float morph, float m1, float m2){
         float s_cur=cur.sample(t,morph,m1,m2);
         float out;
         if(xfade<1.f){
-            float s_prv=prv.sample(t,morph,m1,m2);
-            float f=xfade*xfade*(3.f-2.f*xfade);  // smoothstep
-            out=s_prv*(1.f-f)+s_cur*f;
-            xfade+=1.f/(44100.f*0.2f);  // 200ms crossfade
+            float f=xfade*xfade*(3.f-2.f*xfade);
+            out=prv.sample(t,morph,m1,m2)*(1.f-f)+s_cur*f;
+            xfade+=1.f/4410.f;  // 100ms crossfade
             if(xfade>1.f)xfade=1.f;
         } else {
             out=s_cur;
         }
-        // Ganancia conservadora — el master bus hace el boost
-        out*=0.75f;
+        // Ganancia conservadora — master bus hace el boost
+        out*=0.80f;
         if(out> .92f)out= .92f;
         if(out<-.92f)out=-.92f;
         return(int16_t)(out*32767.f);
     }
 };
 
-// ── Master bus: boost suave + softclip ───────────────────────────
+// ── Master bus ────────────────────────────────────────────────────
+// +6dB boost + softclip suave — señal fuerte sin distorsión digital
 static inline int16_t master_bus(int32_t x){
-    float s=float(x)*(1.8f/32768.f);       // boost ×1.8 (+5dB)
-    float sc=s/(1.f+fabsf(s)*0.6f);         // softclip suave
-    if(sc> .97f)sc= .97f;
-    if(sc<-.97f)sc=-.97f;
+    float s=float(x)*(2.0f/32768.f);         // ×2 (+6dB)
+    float sc=s/(1.f+fabsf(s)*0.55f);          // softclip
+    sc=clampf(sc,-0.97f,0.97f);
     return(int16_t)(sc*32767.f);
 }
 
-// ── Pads resistivos ───────────────────────────────────────────────
+// ── Pads ─────────────────────────────────────────────────────────
 static float    pad_baseline[4]={9300,9300,9300,9300};
 static bool     pad_on[4]={},pad_prev[4]={};
-static uint8_t  pad_conf[4]={};
-static uint32_t pad_hold_ms[4]={};
+static uint8_t  pad_conf_on[4]={},pad_conf_off[4]={};
 
 static uint32_t measure_pad_us(uint8_t c){
     gpio_set_dir(PIN_PAD[c],GPIO_OUT);
@@ -261,22 +255,27 @@ static void calibrate_pads(){
 }
 
 static void scan_pads(){
-    uint32_t now=to_ms_since_boot(get_absolute_time());
     for(uint8_t c=0;c<4;++c){
         pad_prev[c]=pad_on[c];
         uint32_t raw=measure_pad_us(c);
-        bool touched=(float(raw)>pad_baseline[c]*1.35f);
+        bool touched=(float(raw)>pad_baseline[c]*1.30f);
+        // Baseline drift muy lento solo cuando está libre
         if(!touched && !pad_on[c])
             pad_baseline[c]+=0.0005f*(float(raw)-pad_baseline[c]);
         if(!pad_on[c]){
-            if(touched){if(++pad_conf[c]>=4){pad_on[c]=true;pad_hold_ms[c]=now;}}
-            else pad_conf[c]=0;
+            // ON: necesita 3 lecturas consecutivas (filtra spikes)
+            if(touched){if(++pad_conf_on[c]>=3)  pad_on[c]=true;}
+            else{pad_conf_on[c]=0;}
         } else {
-            if(!touched && (now-pad_hold_ms[c])>300u) pad_on[c]=false;
+            // OFF: necesita 2 lecturas consecutivas sin toque
+            // SIN hold mínimo — permite retriggers rápidos
+            if(!touched){if(++pad_conf_off[c]>=2) pad_on[c]=false;}
+            else{pad_conf_off[c]=0;}
         }
     }
 }
 
+// ── Core1: control layer ─────────────────────────────────────────
 static float adc_read_ch(uint ch){adc_select_input(ch);return float(adc_read())/4095.f;}
 
 static void core1_main(){
@@ -285,6 +284,8 @@ static void core1_main(){
         gpio_init(PIN_PAD[c]);gpio_set_dir(PIN_PAD[c],GPIO_IN);
         gpio_disable_pulls(PIN_PAD[c]);
     }
+
+    // ADC — una sola vez, aquí
     adc_init();
     adc_gpio_init(26); adc_gpio_init(27); adc_gpio_init(28);
 
@@ -298,17 +299,20 @@ static void core1_main(){
     gpio_put(PIN_LED,1);
     calibrate_pads();
     for(int i=0;i<3;++i){
-        gpio_put(PIN_LED,0);sleep_ms(120);
-        gpio_put(PIN_LED,1);sleep_ms(120);
+        gpio_put(PIN_LED,0);sleep_ms(100);
+        gpio_put(PIN_LED,1);sleep_ms(100);
     }
     gpio_put(PIN_LED,0);
     g_ready=true;
 
-    float sm=0.5f,sm1=0.5f,sm2=0.5f;
+    // Smoothing mínimo — solo para evitar zipper noise del ADC
+    // MACRO2 sin slew (directo) — el usuario lo pidió
+    float sm=0.5f, sm1=0.5f;
     while(true){
-        sm  +=0.12f*(adc_read_ch(0)-sm);  g_morph =sm;
-        sm1 +=0.12f*(adc_read_ch(1)-sm1); g_macro1=sm1;
-        sm2 +=0.12f*(adc_read_ch(2)-sm2); g_macro2=sm2;
+        sm  +=0.15f*(adc_read_ch(0)-sm);   g_morph  = sm;
+        sm1 +=0.15f*(adc_read_ch(1)-sm1);  g_macro1 = sm1;
+        g_macro2 = adc_read_ch(2);          // DIRECTO, sin slew
+
         scan_pads();
         if(pad_on[0]&&!pad_prev[0]){g_pad_event|=1u;gpio_put(PIN_LED,1);}
         if(!pad_on[0])              gpio_put(PIN_LED,0);
@@ -318,6 +322,7 @@ static void core1_main(){
     }
 }
 
+// ── Core0: audio layer ───────────────────────────────────────────
 int main(){
     const uint off=pio_add_program(g_pio,&pcm5102_i2s_program);
     g_sm=pio_claim_unused_sm(g_pio,true);
@@ -332,9 +337,10 @@ int main(){
     multicore_launch_core1(core1_main);
     while(!g_ready)sleep_ms(10);
 
-    synth.init();  // randomiza después de que Core1 seede el RNG
+    // Randomizar DESPUÉS de que Core1 seede el RNG
+    synth.init();
 
-    uint32_t t=0,cr=0;
+    uint32_t t=0, cr=0;
     while(true){
         if(++cr>=32u){
             cr=0;
@@ -346,18 +352,23 @@ int main(){
                 if(ev&4u) drums.trigger(DRUM_SNARE);
                 if(ev&8u) drums.trigger(DRUM_HAT);
             }
-            drums.set_params(g_macro2*0.6f+0.1f, 0.3f+g_macro2*0.5f, -1.f);
+            // Drums: macro2 controla color y decay
+            drums.set_params(
+                g_macro2*0.6f+0.1f,
+                0.3f+g_macro2*0.5f,
+                -1.f);
         }
 
         const int16_t ss=synth.next(t, g_morph, g_macro1, g_macro2);
         int16_t dl=0,dr=0; int32_t sc=32767;
         drums.process(dl,dr,sc);
 
+        // Sidechain + mix V6 (synth×60% + drums×90%)
         const int32_t sd=((int32_t)ss*sc)>>15;
-        // Mix V6: synth×60% + drums×90%
         int32_t ol=((sd*19661)>>15)+((int32_t)dl*29491>>15);
         int32_t or_=((sd*19661)>>15)+((int32_t)dr*29491>>15);
 
+        // Master bus: +6dB boost + softclip
         i2s_write(master_bus(ol), master_bus(or_));
         ++t;
     }
