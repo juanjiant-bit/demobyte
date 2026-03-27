@@ -1,3 +1,4 @@
+
 #include "io/pads.h"
 #include "hardware/adc.h"
 #include <algorithm>
@@ -8,12 +9,14 @@ namespace {
 PadState g_pads[kNumPads];
 PotState g_pots[kNumPots];
 
-constexpr float kTouchOnRatio = 1.42f;
-constexpr float kTouchHoldRatio = 1.24f;
-constexpr float kTouchOffRatio = 1.12f;
-constexpr uint8_t kConfirmOn = 4;
-constexpr uint8_t kConfirmOff = 4;
-constexpr uint16_t kCooldownMs = 65;
+constexpr float kTouchOnRatio = 1.22f;
+constexpr float kTouchHoldRatio = 1.15f;
+constexpr float kTouchOffRatio = 1.08f;
+
+constexpr uint8_t kConfirmOn = 2;
+constexpr uint8_t kConfirmOff = 2;
+
+constexpr uint16_t kCooldownMs = 12;
 constexpr uint16_t kMaxCount = 2200;
 
 uint16_t read_cap_once(uint pin) {
@@ -123,7 +126,7 @@ void update_1ms() {
         const bool touch_low = raw < off_th;
 
         if (!p.pressed) {
-            if (touch_high && p.cooldown_ms == 0) {
+            if (touch_high) {
                 if (p.on_count < 255) ++p.on_count;
             } else if (p.on_count > 0) {
                 --p.on_count;
