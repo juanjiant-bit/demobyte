@@ -17,9 +17,9 @@ public:
 private:
     float eval_formula(uint8_t id, uint32_t t) const;
     float softclip(float x) const;
+    uint32_t next_rand();
 
     uint32_t t_ = 0;
-    float phase_f_ = 0.0f;
     uint8_t formula_a_ = 0;
     uint8_t formula_b_ = 1;
     float morph_ = 0.0f;
@@ -27,7 +27,7 @@ private:
     float pressure_ = 0.0f;
     bool drone_on_ = false;
     uint32_t lfsr_ = 0x13579BDFu;
-    uint8_t recent_[4] = {255,255,255,255};
+    uint8_t recent_[6] = {255,255,255,255,255,255};
     uint8_t recent_idx_ = 0;
 };
 
