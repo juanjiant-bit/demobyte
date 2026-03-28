@@ -1,26 +1,34 @@
 
-#include <stdio.h>
-#include <math.h>
 #include "pico/stdlib.h"
 #include "audio/audio_output_i2s.h"
 #include "io/pads.h"
+#include "synth/bytebeat_engine.h"
+#include "drums/drum_engine.h"
+#include "master/master.h"
+#include <algorithm>
 
 static audio::AudioOutputI2S g_i2s;
+static synth::BytebeatEngine g_synth;
+static drums::DrumEngine g_drums;
+static master::Master g_master;
 
-static inline float clamp1(float x) {
+static bool g_drone = true;
+
+static inline int16_t f_to_i16(float x) {
+    if (x > 1.0f) x = 1.0f;
+    if (x < -1.0f) x = -1.0f;
+    return static_cast<int16_t>(x * 32767.0f);
+}
+
+static inline float clamp01(float x) {
+    if (x < 0.0f) return 0.0f;
     if (x > 1.0f) return 1.0f;
-    if (x < -1.0f) return -1.0f;
     return x;
 }
 
-static inline int16_t f_to_i16(float x) {
-    return static_cast<int16_t>(clamp1(x) * 32767.0f);
-}
-
-// Versión que compila aunque PadState no exponga baseline.
-// Basada en lo que mediste por serial:
-// - reposo aprox: raw 19..25
-// - toque suave: raw ~100
+// Misma métrica que ya funcionó en el pad-test.
+// En tu hardware real, raw en reposo ronda ~19..25 y al tocar sube bastante.
+// Aprovechamos esa separación para derivar triggers estables sin depender de p.trigger.
 static inline float pad_metric(const controls::PadState& p) {
     if (p.raw <= 25) {
         return p.pressure > 0.0f ? p.pressure : 0.0f;
@@ -34,122 +42,92 @@ static inline float pad_metric(const controls::PadState& p) {
     return m;
 }
 
-struct Voice {
-    bool active = false;
-    float env = 0.0f;
-    float phase = 0.0f;
-    float freq = 220.0f;
-    float decay = 0.995f;
-    float amp = 0.8f;
-    bool noise = false;
-    unsigned rng = 0x12345678u;
-};
-
-static Voice v1, v2, v3, v4;
-
-static inline float white(Voice& v) {
-    v.rng ^= v.rng << 13;
-    v.rng ^= v.rng >> 17;
-    v.rng ^= v.rng << 5;
-    return (float)(v.rng & 0xffffu) * (1.0f / 32767.5f) - 1.0f;
-}
-
-static void trigger_voice(Voice& v, float freq, float decay, float amp, bool noise=false) {
-    v.active = true;
-    v.env = 1.0f;
-    v.freq = freq;
-    v.decay = decay;
-    v.amp = amp;
-    v.noise = noise;
-}
-
-static float render_voice(Voice& v) {
-    if (!v.active || v.env < 0.0005f) {
-        v.active = false;
-        return 0.0f;
-    }
-
-    float x;
-    if (v.noise) {
-        x = white(v);
-    } else {
-        v.phase += v.freq / 44100.0f;
-        if (v.phase >= 1.0f) v.phase -= 1.0f;
-        x = sinf(6.2831853f * v.phase);
-    }
-
-    x *= v.env * v.amp;
-    v.env *= v.decay;
-    return x;
-}
-
 int main() {
     stdio_init_all();
-    sleep_ms(1200);
 
     controls::init();
     g_i2s.init();
+    g_synth.init();
+    g_drums.init();
+    g_master.init();
+    g_synth.set_drone(g_drone);
 
-    absolute_time_t last_ctrl = get_absolute_time();
+    absolute_time_t last = get_absolute_time();
+
+    // Trigger limpio con edge detect + lockout corto por pad
     bool prev_gate[4] = {false, false, false, false};
-    int dbg_counter = 0;
+    uint32_t lockout_ms[4] = {0, 0, 0, 0};
 
     constexpr float kTrig = 0.20f;
     constexpr float kRel  = 0.08f;
+    constexpr uint32_t kLockout = 90;
 
     while (true) {
-        absolute_time_t now = get_absolute_time();
-        if (absolute_time_diff_us(last_ctrl, now) >= 1000) {
-            last_ctrl = now;
+        const absolute_time_t now = get_absolute_time();
+        if (absolute_time_diff_us(last, now) >= 1000) {
+            last = now;
             controls::update_1ms();
+
+            const uint32_t now_ms = to_ms_since_boot(now);
 
             const auto& p1 = controls::pad(0);
             const auto& p2 = controls::pad(1);
             const auto& p3 = controls::pad(2);
             const auto& p4 = controls::pad(3);
 
-            const float m1 = pad_metric(p1);
-            const float m2 = pad_metric(p2);
-            const float m3 = pad_metric(p3);
-            const float m4 = pad_metric(p4);
+            const float m[4] = {
+                pad_metric(p1),
+                pad_metric(p2),
+                pad_metric(p3),
+                pad_metric(p4)
+            };
 
-            const bool g1 = m1 > kTrig;
-            const bool g2 = m2 > kTrig;
-            const bool g3 = m3 > kTrig;
-            const bool g4 = m4 > kTrig;
+            for (int i = 0; i < 4; ++i) {
+                const bool gate = m[i] > kTrig;
+                bool trig = false;
 
-            const bool t1 = g1 && !prev_gate[0];
-            const bool t2 = g2 && !prev_gate[1];
-            const bool t3 = g3 && !prev_gate[2];
-            const bool t4 = g4 && !prev_gate[3];
+                if (now_ms > lockout_ms[i]) {
+                    trig = gate && !prev_gate[i];
+                }
 
-            prev_gate[0] = (m1 > kRel) ? g1 : false;
-            prev_gate[1] = (m2 > kRel) ? g2 : false;
-            prev_gate[2] = (m3 > kRel) ? g3 : false;
-            prev_gate[3] = (m4 > kRel) ? g4 : false;
+                if (trig) {
+                    lockout_ms[i] = now_ms + kLockout;
 
-            if (t1) trigger_voice(v1, 110.0f, 0.9980f, 0.80f, false);
-            if (t2) trigger_voice(v2, 220.0f, 0.9968f, 0.70f, false);
-            if (t3) trigger_voice(v3, 440.0f, 0.9955f, 0.60f, false);
-            if (t4) trigger_voice(v4, 0.0f,   0.9750f, 0.45f, true);
+                    if (i == 0) {
+                        g_drone = !g_drone;
+                        g_synth.set_drone(g_drone);
+                        g_synth.next_formula_pair();
+                    } else if (i == 1) {
+                        g_drums.trigger_kick();
+                    } else if (i == 2) {
+                        g_drums.trigger_snare();
+                    } else if (i == 3) {
+                        g_drums.trigger_hat();
+                    }
+                }
 
-            if (++dbg_counter >= 50) {
-                dbg_counter = 0;
-                printf("P1 raw=%d pr=%.2f m=%.2f trig=%d\n", p1.raw, p1.pressure, m1, t1);
-                printf("P2 raw=%d pr=%.2f m=%.2f trig=%d\n", p2.raw, p2.pressure, m2, t2);
-                printf("P3 raw=%d pr=%.2f m=%.2f trig=%d\n", p3.raw, p3.pressure, m3, t3);
-                printf("P4 raw=%d pr=%.2f m=%.2f trig=%d\n\n", p4.raw, p4.pressure, m4, t4);
+                prev_gate[i] = (m[i] > kRel) ? gate : false;
             }
+
+            // Controles originales de BUENA
+            g_synth.set_morph(controls::morph());
+            g_synth.set_color(controls::color());
+
+            // Mantener aftertouch expresivo en pad 1
+            g_synth.set_pressure(std::max(p1.pressure, m[0]));
+
+            g_master.set_volume(controls::volume());
         }
 
-        float mix = 0.0f;
-        mix += render_voice(v1);
-        mix += render_voice(v2);
-        mix += render_voice(v3);
-        mix += render_voice(v4);
-        mix = mix / (1.0f + fabsf(mix));
+        const float color = controls::color();
+        float bb = g_synth.render();
+        const float duck = 1.0f - 0.55f * g_drums.kick_env();
+        float drum = g_drums.render(color);
 
-        int16_t s = f_to_i16(mix * 0.9f);
+        float mix = bb * duck * 0.96f + drum * 0.92f;
+        mix = g_master.process(mix);
+
+        const int16_t s = f_to_i16(mix);
         g_i2s.write(s, s);
     }
 }
