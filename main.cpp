@@ -5,6 +5,7 @@
 #include "synth/bytebeat_engine.h"
 #include "drums/drum_engine.h"
 #include "master/master.h"
+#include <cmath>
 
 static audio::AudioOutputI2S g_i2s;
 static synth::BytebeatEngine g_synth;
@@ -23,18 +24,9 @@ static inline float clamp01(float x) {
     return x;
 }
 
-// IMPORTANTE:
-// En la integración anterior el trigger usaba max(raw_metric, pressure),
-// y eso deja puerta a falsos disparos porque pressure sigue viva un rato.
-// Acá el TRIGGER sale SOLO de raw.
-// El aftertouch sigue viniendo SOLO de pressure.
 static inline float raw_gate_metric(const controls::PadState& p) {
-    // Reposo medido: ~19..25
-    // Toque suave: ~100
-    // Dejamos una zona muerta amplia para evitar fantasmas.
     if (p.raw <= 40) return 0.0f;
-
-    float m = float(int(p.raw) - 40) / 60.0f; // 40..100 -> 0..1
+    float m = float(int(p.raw) - 40) / 60.0f;
     if (m < 0.0f) m = 0.0f;
     if (m > 1.0f) m = 1.0f;
     return m;
@@ -42,7 +34,7 @@ static inline float raw_gate_metric(const controls::PadState& p) {
 
 int main() {
     stdio_init_all();
-    sleep_ms(1200);   // igual que en el pad-test que sí funcionó
+    sleep_ms(1200);
 
     controls::init();
     g_i2s.init();
@@ -56,11 +48,10 @@ int main() {
     bool prev_gate[4] = {false, false, false, false};
     uint32_t lockout_ms[4] = {0, 0, 0, 0};
 
-    constexpr float kTrig = 0.18f;
-    constexpr float kRel  = 0.07f;
-    constexpr uint32_t kLockout = 110;
+    const float trig_th[4] = {0.18f, 0.10f, 0.10f, 0.10f};
+    const float rel_th [4] = {0.07f, 0.04f, 0.04f, 0.04f};
+    const uint32_t lock_ms[4] = {110, 90, 90, 70};
 
-    // ignorar triggers en el arranque mientras todo se estabiliza
     const uint32_t boot_ignore_until = to_ms_since_boot(get_absolute_time()) + 1500;
 
     while (true) {
@@ -83,8 +74,17 @@ int main() {
                 raw_gate_metric(p4)
             };
 
+            // CLAVE:
+            // solo el pad 1 puede modificar el motor de síntesis,
+            // y solo cuando es claramente el pad dominante.
+            const bool pad1_is_primary =
+                (m[0] > 0.18f) &&
+                (m[0] > m[1] + 0.12f) &&
+                (m[0] > m[2] + 0.12f) &&
+                (m[0] > m[3] + 0.12f);
+
             for (int i = 0; i < 4; ++i) {
-                const bool gate = m[i] > kTrig;
+                const bool gate = m[i] > trig_th[i];
                 bool trig = false;
 
                 if (now_ms > boot_ignore_until && now_ms > lockout_ms[i]) {
@@ -92,11 +92,12 @@ int main() {
                 }
 
                 if (trig) {
-                    lockout_ms[i] = now_ms + kLockout;
+                    lockout_ms[i] = now_ms + lock_ms[i];
 
                     if (i == 0) {
-                        // SOLO random fórmula. No toggle de drone.
-                        g_synth.next_formula_pair();
+                        if (pad1_is_primary) {
+                            g_synth.next_formula_pair();
+                        }
                     } else if (i == 1) {
                         g_drums.trigger_kick();
                     } else if (i == 2) {
@@ -106,25 +107,34 @@ int main() {
                     }
                 }
 
-                prev_gate[i] = (m[i] > kRel) ? gate : false;
+                prev_gate[i] = (m[i] > rel_th[i]) ? gate : false;
             }
 
-            // Controles originales de BUENA
             g_synth.set_morph(controls::morph());
-            g_synth.set_color(controls::color());
 
-            // Aftertouch expresivo SOLO desde pressure del pad 1
-            g_synth.set_pressure(clamp01(p1.pressure));
+            // Más rango útil para el pote de mod:
+            // se abre el recorrido bajo y medio sin salir de 0..1.
+            const float mod_wide = powf(clamp01(controls::color()), 0.22f);
+            g_synth.set_color(mod_wide);
 
-            g_master.set_volume(controls::volume());
+            // El aftertouch solo entra cuando realmente está activo el pad 1.
+            const float p1_after = pad1_is_primary ? clamp01(p1.pressure) : 0.0f;
+            g_synth.set_pressure(p1_after);
+
+            // El volumen solo afecta al motor de síntesis.
+            g_master.set_volume(1.0f);
         }
 
-        const float color = controls::color();
-        float bb = g_synth.render();
-        const float duck = 1.0f - 0.55f * g_drums.kick_env();
-        float drum = g_drums.render(color);
+        const float synth_vol = controls::volume();
+        const float drum_color = 0.25f + 0.75f * controls::color();
 
-        float mix = bb * duck * 0.96f + drum * 0.92f;
+        float bb = g_synth.render();
+        bb *= synth_vol;
+
+        const float duck = 1.0f - 0.50f * g_drums.kick_env();
+        float drum = g_drums.render(drum_color);
+
+        float mix = bb * duck * 0.94f + drum * 1.15f;
         mix = g_master.process(mix);
 
         const int16_t s = f_to_i16(mix);
