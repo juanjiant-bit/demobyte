@@ -4,17 +4,21 @@
 #include <cmath>
 
 namespace controls {
+
 namespace {
+
 PadState g_pads[kNumPads];
 PotState g_pots[kNumPots];
 
-constexpr float kTouchOnRatio = 1.42f;
-constexpr float kTouchHoldRatio = 1.24f;
-constexpr float kTouchOffRatio = 1.12f;
-constexpr uint8_t kConfirmOn = 4;
-constexpr uint8_t kConfirmOff = 4;
-constexpr uint16_t kCooldownMs = 65;
 constexpr uint16_t kMaxCount = 2200;
+
+// 🔥 NUEVOS THRESHOLDS (basados en tu hardware)
+constexpr int kOnThreshold  = 60;
+constexpr int kHoldThreshold = 45;
+
+// 🔥 timing
+constexpr uint32_t kHoldMs = 500;
+constexpr uint32_t kRetrigLockMs = 100;
 
 uint16_t read_cap_once(uint pin) {
     gpio_init(pin);
@@ -26,155 +30,98 @@ uint16_t read_cap_once(uint pin) {
     gpio_disable_pulls(pin);
 
     uint16_t count = 0;
-    while (!gpio_get(pin) && count < kMaxCount) {
-        ++count;
-    }
+    while (!gpio_get(pin) && count < kMaxCount) ++count;
     return count;
 }
 
 uint16_t read_cap_avg(uint pin) {
     uint32_t sum = 0;
-    for (int i = 0; i < 3; ++i) {
-        sum += read_cap_once(pin);
-    }
+    for (int i = 0; i < 3; ++i) sum += read_cap_once(pin);
     return static_cast<uint16_t>(sum / 3);
-}
-
-uint16_t trimmed_calibration(uint pin) {
-    uint16_t vals[20];
-    for (int i = 0; i < 20; ++i) {
-        vals[i] = read_cap_avg(pin);
-        sleep_us(180);
-    }
-    std::sort(vals, vals + 20);
-    uint32_t sum = 0;
-    for (int i = 4; i < 16; ++i) sum += vals[i];
-    return static_cast<uint16_t>(sum / 12);
 }
 
 uint16_t read_adc_avg(uint adc_input) {
     adc_select_input(adc_input);
     uint32_t sum = 0;
-    for (int i = 0; i < 8; ++i) {
-        sum += adc_read();
-    }
+    for (int i = 0; i < 8; ++i) sum += adc_read();
     return static_cast<uint16_t>(sum / 8);
 }
 
 float smooth_pot(int idx, float target, float alpha) {
     g_pots[idx].value += alpha * (target - g_pots[idx].value);
     float diff = fabsf(g_pots[idx].value - g_pots[idx].stable);
-    if (diff > 0.0025f) {
-        g_pots[idx].stable = g_pots[idx].value;
-    }
+    if (diff > 0.0025f) g_pots[idx].stable = g_pots[idx].value;
     return g_pots[idx].stable;
 }
-}  // namespace
+
+} // namespace
 
 void init() {
     adc_init();
     for (int i = 0; i < kNumPots; ++i) {
         adc_gpio_init(kPotPins[i]);
     }
-
-    for (int i = 0; i < kNumPads; ++i) {
-        g_pads[i].baseline = trimmed_calibration(kPadPins[i]);
-        g_pads[i].raw = g_pads[i].baseline;
-    }
-
-    for (int i = 0; i < kNumPots; ++i) {
-        const uint16_t raw = read_adc_avg(i);
-        g_pots[i].raw = raw;
-        g_pots[i].value = raw / 4095.0f;
-        g_pots[i].stable = g_pots[i].value;
-    }
 }
 
 void update_1ms() {
+
     for (int i = 0; i < kNumPots; ++i) {
         const uint16_t raw = read_adc_avg(i);
         g_pots[i].raw = raw;
-        float target = static_cast<float>(raw) / 4095.0f;
-        if (i == 0) {
-            smooth_pot(i, target, 0.06f);  // volume bien estable
-        } else {
-            smooth_pot(i, target, 0.10f);
-        }
+        float target = raw / 4095.0f;
+        smooth_pot(i, target, i == 0 ? 0.06f : 0.1f);
     }
+
+    uint32_t now = to_ms_since_boot(get_absolute_time());
 
     for (int i = 0; i < kNumPads; ++i) {
         auto& p = g_pads[i];
+
         p.trigger = false;
         p.release = false;
-        if (p.cooldown_ms > 0) --p.cooldown_ms;
 
-        const uint16_t raw = read_cap_avg(kPadPins[i]);
+        uint16_t raw = read_cap_avg(kPadPins[i]);
         p.raw = raw;
 
-        if (!p.pressed) {
-            p.baseline = static_cast<uint16_t>(0.998f * p.baseline + 0.002f * raw);
-        }
+        bool touching = raw >= kOnThreshold;
+        bool holding  = raw >= kHoldThreshold;
 
-        const float on_th = p.baseline * kTouchOnRatio;
-        const float hold_th = p.baseline * kTouchHoldRatio;
-        const float off_th = p.baseline * kTouchOffRatio;
-
-        const bool touch_high = raw > on_th;
-        const bool touch_low = raw < off_th;
-
-        if (!p.pressed) {
-            if (touch_high && p.cooldown_ms == 0) {
-                if (p.on_count < 255) ++p.on_count;
-            } else if (p.on_count > 0) {
-                --p.on_count;
-            }
-
-            if (p.on_count >= kConfirmOn) {
+        // 🔥 TRIGGER
+        if (!p.pressed && touching) {
+            if ((now - p.last_trigger_ms) > kRetrigLockMs) {
                 p.pressed = true;
                 p.trigger = true;
-                p.pressure = 0.0f;
-                p.on_count = 0;
-                p.off_count = 0;
-                p.cooldown_ms = kCooldownMs;
+                p.held = false;
+                p.touch_start_ms = now;
+                p.last_trigger_ms = now;
             }
-        } else {
-            if (touch_low) {
-                if (p.off_count < 255) ++p.off_count;
-            } else {
-                p.off_count = 0;
+        }
+
+        // 🔥 HOLD + AFTERTOUCH
+        if (p.pressed && holding) {
+            if ((now - p.touch_start_ms) > kHoldMs) {
+                p.held = true;
             }
 
-            if (p.off_count >= kConfirmOff) {
-                p.pressed = false;
-                p.release = true;
-                p.off_count = 0;
-                p.pressure = 0.0f;
-            } else {
-                const float span = std::max(1.0f, on_th - hold_th);
-                float pr = (static_cast<float>(raw) - hold_th) / span;
-                pr = std::clamp(pr, 0.0f, 1.0f);
-                p.pressure += 0.16f * (pr - p.pressure);
-            }
+            float pr = (raw - kHoldThreshold) / 80.0f;
+            pr = std::clamp(pr, 0.0f, 1.0f);
+            p.pressure += 0.2f * (pr - p.pressure);
+        }
+
+        // 🔥 RELEASE (sin retrigger)
+        if (p.pressed && !holding) {
+            p.pressed = false;
+            p.release = true;
+            p.held = false;
+            p.pressure = 0.0f;
         }
     }
 }
 
-const PadState& pad(int idx) {
-    return g_pads[idx];
-}
+const PadState& pad(int idx) { return g_pads[idx]; }
 
-float volume() {
-    float v = std::clamp(g_pots[0].stable, 0.0f, 1.0f);
-    v = 0.03f + 0.97f * v;  // nunca mute accidental
-    return v;
-}
+float volume() { return std::clamp(g_pots[0].stable, 0.0f, 1.0f); }
+float morph()  { return std::clamp(g_pots[1].stable, 0.0f, 1.0f); }
+float color()  { return std::clamp(g_pots[2].stable, 0.0f, 1.0f); }
 
-float morph() {
-    return std::clamp(g_pots[1].stable, 0.0f, 1.0f);
 }
-
-float color() {
-    return std::clamp(g_pots[2].stable, 0.0f, 1.0f);
-}
-
-}  // namespace controls
