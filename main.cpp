@@ -17,11 +17,16 @@ static inline int16_t f_to_i16(float x) {
     return static_cast<int16_t>(clamp1(x) * 32767.0f);
 }
 
+// IMPORTANTE:
+// En tu hardware, la prueba anterior indica que usar raw-baseline
+// deja un gate abierto en reposo. Acá invertimos la métrica:
+// el "toque" es cuando raw BAJA respecto del baseline.
 static inline float pad_metric(const controls::PadState& p) {
-    const int d = int(p.raw) - int(p.baseline);
+    const int d = int(p.baseline) - int(p.raw);
     if (d <= 0) return 0.0f;
     float by_delta = float(d) / 8.0f;
-    float m = by_delta > p.pressure ? by_delta : p.pressure;
+    float m = by_delta;
+    if (p.pressure > m) m = p.pressure;
     if (m > 1.0f) m = 1.0f;
     return m;
 }
@@ -84,8 +89,10 @@ int main() {
     bool prev_gate[4] = {false, false, false, false};
     int dbg_counter = 0;
 
-    constexpr float kTrig = 0.25f;
-    constexpr float kRel  = 0.08f;
+    // Umbrales más bajos porque ahora la métrica está invertida
+    // y queremos un pad tipo trigger/gate + aftertouch.
+    constexpr float kTrig = 0.10f;
+    constexpr float kRel  = 0.04f;
 
     while (true) {
         absolute_time_t now = get_absolute_time();
