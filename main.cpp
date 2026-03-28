@@ -133,6 +133,29 @@ int main() {
                 printf("P3 raw=%d trig=%d press=%d hold=%d pr=%.2f\n", p3.raw, p3.trigger, p3.pressed, p3.held, p3.pressure);
                 printf("P4 raw=%d trig=%d press=%d hold=%d pr=%.2f\n", p4.raw, p4.trigger, p4.pressed, p4.held, p4.pressure);
                 printf("pots vol=%.2f morph=%.2f color=%.2f\n\n", controls::volume(), controls::morph(), controls::color());
+
+                static uint32_t last_print = 0;
+
+if (to_ms_since_boot(get_absolute_time()) - last_print > 100) {
+    last_print = to_ms_since_boot(get_absolute_time());
+
+    const auto& p1 = controls::pad(0);
+    const auto& p2 = controls::pad(1);
+    const auto& p3 = controls::pad(2);
+    const auto& p4 = controls::pad(3);
+
+    printf("P1 raw=%d pr=%.2f trig=%d gate=%d | ",
+           p1.raw, p1.pressure, p1.trigger, p1.pressed);
+
+    printf("P2 raw=%d pr=%.2f trig=%d gate=%d | ",
+           p2.raw, p2.pressure, p2.trigger, p2.pressed);
+
+    printf("P3 raw=%d pr=%.2f trig=%d gate=%d | ",
+           p3.raw, p3.pressure, p3.trigger, p3.pressed);
+
+    printf("P4 raw=%d pr=%.2f trig=%d gate=%d\n",
+           p4.raw, p4.pressure, p4.trigger, p4.pressed);
+}
             }
         }
 
