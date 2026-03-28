@@ -1,10 +1,3 @@
-Reemplazá solo io/pads.cpp en BUENA por este archivo.
-
-Qué cambia:
-- edge detection más directa
-- menos latch permanente
-- release más fácil
-- trigger más fácil de recuperar
-- aftertouch se mantiene
-
-Si todavía no dispara, el siguiente paso sería instrumentar por serial raw/baseline/pressed/trigger.
+Reemplazar solo io/pads.h e io/pads.cpp.
+Nueva lógica: trigger por RAW (delta sobre baseline), hold a 500 ms, aftertouch en hold, nada al soltar.
+Ajustado a deltas observados ~4..8 counts.

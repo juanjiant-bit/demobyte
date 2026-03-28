@@ -1,3 +1,4 @@
+
 #include "io/pads.h"
 #include "hardware/adc.h"
 #include <algorithm>
@@ -8,12 +9,13 @@ namespace {
 PadState g_pads[kNumPads];
 PotState g_pots[kNumPots];
 
-constexpr float kTouchOnRatio = 1.42f;
-constexpr float kTouchHoldRatio = 1.24f;
-constexpr float kTouchOffRatio = 1.12f;
-constexpr uint8_t kConfirmOn = 4;
-constexpr uint8_t kConfirmOff = 4;
-constexpr uint16_t kCooldownMs = 65;
+// Lógica simple basada en RAW, no en ratios complejos.
+// Ajustado a los valores reales que mostraste:
+// baseline ~13..15 y touch ~18..22 => delta útil ~4..8 counts.
+constexpr int kTouchDeltaOn = 4;      // trigger cuando raw sube ~4 counts sobre baseline
+constexpr int kTouchDeltaHold = 2;    // mantener gate con menos delta
+constexpr uint32_t kHoldMs = 500;     // desde acá pasa a hold/aftertouch
+
 constexpr uint16_t kMaxCount = 2200;
 
 uint16_t read_cap_once(uint pin) {
@@ -96,64 +98,55 @@ void update_1ms() {
         g_pots[i].raw = raw;
         float target = static_cast<float>(raw) / 4095.0f;
         if (i == 0) {
-            smooth_pot(i, target, 0.06f);  // volume bien estable
+            smooth_pot(i, target, 0.06f);
         } else {
             smooth_pot(i, target, 0.10f);
         }
     }
 
+    const uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+
     for (int i = 0; i < kNumPads; ++i) {
         auto& p = g_pads[i];
         p.trigger = false;
         p.release = false;
-        if (p.cooldown_ms > 0) --p.cooldown_ms;
 
         const uint16_t raw = read_cap_avg(kPadPins[i]);
         p.raw = raw;
 
+        // Baseline lento solo en reposo.
         if (!p.pressed) {
-            p.baseline = static_cast<uint16_t>(0.998f * p.baseline + 0.002f * raw);
+            p.baseline = static_cast<uint16_t>(0.999f * p.baseline + 0.001f * raw);
         }
 
-        const float on_th = p.baseline * kTouchOnRatio;
-        const float hold_th = p.baseline * kTouchHoldRatio;
-        const float off_th = p.baseline * kTouchOffRatio;
-
-        const bool touch_high = raw > on_th;
-        const bool touch_low = raw < off_th;
+        const int delta = int(raw) - int(p.baseline);
 
         if (!p.pressed) {
-            if (touch_high && p.cooldown_ms == 0) {
-                if (p.on_count < 255) ++p.on_count;
-            } else if (p.on_count > 0) {
-                --p.on_count;
-            }
-
-            if (p.on_count >= kConfirmOn) {
+            if (delta >= kTouchDeltaOn) {
                 p.pressed = true;
                 p.trigger = true;
+                p.release = false;
+                p.held = false;
+                p.touch_start_ms = now_ms;
                 p.pressure = 0.0f;
-                p.on_count = 0;
-                p.off_count = 0;
-                p.cooldown_ms = kCooldownMs;
             }
         } else {
-            if (touch_low) {
-                if (p.off_count < 255) ++p.off_count;
-            } else {
-                p.off_count = 0;
-            }
-
-            if (p.off_count >= kConfirmOff) {
+            if (delta <= kTouchDeltaHold) {
+                // soltar: no retrigger al release
                 p.pressed = false;
                 p.release = true;
-                p.off_count = 0;
+                p.trigger = false;
+                p.held = false;
                 p.pressure = 0.0f;
             } else {
-                const float span = std::max(1.0f, on_th - hold_th);
-                float pr = (static_cast<float>(raw) - hold_th) / span;
+                if ((now_ms - p.touch_start_ms) >= kHoldMs) {
+                    p.held = true;
+                }
+
+                // aftertouch expresivo mientras sigue tocado
+                float pr = float(delta - kTouchDeltaHold) / 8.0f;
                 pr = std::clamp(pr, 0.0f, 1.0f);
-                p.pressure += 0.16f * (pr - p.pressure);
+                p.pressure += 0.18f * (pr - p.pressure);
             }
         }
     }
@@ -165,7 +158,7 @@ const PadState& pad(int idx) {
 
 float volume() {
     float v = std::clamp(g_pots[0].stable, 0.0f, 1.0f);
-    v = 0.03f + 0.97f * v;  // nunca mute accidental
+    v = 0.03f + 0.97f * v;
     return v;
 }
 
