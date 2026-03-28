@@ -1,18 +1,15 @@
 
 #include "drums/drum_engine.h"
 #include <cmath>
+#include <cstdint>
 
 namespace drums {
 namespace {
 static inline float softclip(float x) {
-    return x / (1.0f + 0.9f * fabsf(x));
+    return x / (1.0f + 0.8f * fabsf(x));
 }
 
-static inline float sat(float x) {
-    return x / (1.0f + 1.45f * fabsf(x));
-}
-
-static inline float white(unsigned& s) {
+static inline float rand_noise(uint32_t& s) {
     s ^= s << 13;
     s ^= s >> 17;
     s ^= s << 5;
@@ -37,45 +34,43 @@ float DrumEngine::kick_env() const { return kick_env_; }
 float DrumEngine::render(float color) {
     float out = 0.0f;
 
-    // Kick reformulado: más seno/sub, menos sweep raro.
+    // Kick simple y sólido
     if (kick_env_ > 0.0005f) {
-        const float env = kick_env_;
-        const float freq = 47.0f + 58.0f * env + 6.0f * color;
+        float env = kick_env_;
+        float freq = 50.0f + 70.0f * env;
         kick_phase_ += freq / 44100.0f;
         if (kick_phase_ >= 1.0f) kick_phase_ -= 1.0f;
 
-        const float body = sinf(6.2831853f * kick_phase_);
-        const float sub  = sinf(3.1415926f * kick_phase_) * 0.72f;
-        const float click = (env > 0.90f) ? ((env - 0.90f) * 0.9f) : 0.0f;
+        float sine = sinf(6.2831853f * kick_phase_);
+        float sub  = sinf(3.1415926f * kick_phase_) * 0.9f;
+        float click = (env > 0.92f) ? (env - 0.92f) * 1.2f : 0.0f;
 
-        float k = (body * 0.68f + sub + click) * env;
-        k = sat(k * 2.05f);
-        out += k * 1.12f;
+        float k = (sine * 0.6f + sub + click) * env;
+        k = softclip(k * 1.8f);
+        out += k * 1.5f;
 
-        kick_env_ *= 0.99895f;
+        kick_env_ *= 0.9992f;
     }
 
     if (snare_env_ > 0.0005f) {
-        float n = white(noise_);
-        snare_tone_phase_ += (165.0f + 95.0f * color) / 44100.0f;
+        float n = rand_noise(noise_);
+        snare_tone_phase_ += (150.0f + 110.0f * color) / 44100.0f;
         if (snare_tone_phase_ >= 1.0f) snare_tone_phase_ -= 1.0f;
 
-        float tone = sinf(6.2831853f * snare_tone_phase_) * 0.18f;
-        float s = (n * 0.60f + tone) * snare_env_;
-        s = sat(s * 1.75f);
-        out += s * 0.95f;
+        float tone = sinf(6.2831853f * snare_tone_phase_) * 0.2f;
+        float s = (n * 0.72f + tone) * snare_env_;
+        out += softclip(s * 2.0f);
 
-        snare_env_ *= (0.9978f - 0.0004f * color);
+        snare_env_ *= (0.9979f - 0.0005f * color);
     }
 
     if (hat_env_ > 0.0005f) {
-        float n = white(noise_);
+        float n = rand_noise(noise_);
         float bright = (n >= 0.0f ? 1.0f : -1.0f) * sqrtf(fabsf(n));
-        float h = bright * hat_env_ * (0.20f + 0.10f * color);
-        h = sat(h * 1.9f);
-        out += h * 0.74f;
+        float h = bright * hat_env_ * (0.26f + 0.12f * color);
+        out += softclip(h * 2.2f);
 
-        hat_env_ *= (0.9926f - 0.0008f * color);
+        hat_env_ *= (0.9920f - 0.0007f * color);
     }
 
     return softclip(out);
