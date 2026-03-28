@@ -1,4 +1,3 @@
-
 #pragma once
 #include "pico/stdlib.h"
 #include <stdint.h>
@@ -12,7 +11,6 @@ static constexpr uint kPotPins[kNumPots] = {26, 27, 28};
 
 struct PadState {
     uint16_t raw = 0;
-    uint16_t baseline = 0;
 
     bool pressed = false;
     bool trigger = false;
@@ -22,6 +20,7 @@ struct PadState {
     float pressure = 0.0f;
 
     uint32_t touch_start_ms = 0;
+    uint32_t last_trigger_ms = 0;
 };
 
 struct PotState {
@@ -38,4 +37,4 @@ float volume();
 float morph();
 float color();
 
-}  // namespace controls
+}
