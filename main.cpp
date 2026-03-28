@@ -17,17 +17,20 @@ static inline int16_t f_to_i16(float x) {
     return static_cast<int16_t>(clamp1(x) * 32767.0f);
 }
 
-// IMPORTANTE:
-// En tu hardware, la prueba anterior indica que usar raw-baseline
-// deja un gate abierto en reposo. Acá invertimos la métrica:
-// el "toque" es cuando raw BAJA respecto del baseline.
+// Versión que compila aunque PadState no exponga baseline.
+// Basada en lo que mediste por serial:
+// - reposo aprox: raw 19..25
+// - toque suave: raw ~100
 static inline float pad_metric(const controls::PadState& p) {
-    const int d = int(p.baseline) - int(p.raw);
-    if (d <= 0) return 0.0f;
-    float by_delta = float(d) / 8.0f;
-    float m = by_delta;
-    if (p.pressure > m) m = p.pressure;
+    if (p.raw <= 25) {
+        return p.pressure > 0.0f ? p.pressure : 0.0f;
+    }
+
+    float m = float(int(p.raw) - 25) / 75.0f; // 25..100 -> 0..1 aprox
+    if (m < 0.0f) m = 0.0f;
     if (m > 1.0f) m = 1.0f;
+
+    if (p.pressure > m) m = p.pressure;
     return m;
 }
 
@@ -65,6 +68,7 @@ static float render_voice(Voice& v) {
         v.active = false;
         return 0.0f;
     }
+
     float x;
     if (v.noise) {
         x = white(v);
@@ -73,6 +77,7 @@ static float render_voice(Voice& v) {
         if (v.phase >= 1.0f) v.phase -= 1.0f;
         x = sinf(6.2831853f * v.phase);
     }
+
     x *= v.env * v.amp;
     v.env *= v.decay;
     return x;
@@ -89,10 +94,8 @@ int main() {
     bool prev_gate[4] = {false, false, false, false};
     int dbg_counter = 0;
 
-    // Umbrales más bajos porque ahora la métrica está invertida
-    // y queremos un pad tipo trigger/gate + aftertouch.
-    constexpr float kTrig = 0.10f;
-    constexpr float kRel  = 0.04f;
+    constexpr float kTrig = 0.20f;
+    constexpr float kRel  = 0.08f;
 
     while (true) {
         absolute_time_t now = get_absolute_time();
@@ -132,10 +135,10 @@ int main() {
 
             if (++dbg_counter >= 50) {
                 dbg_counter = 0;
-                printf("P1 raw=%d base=%d pr=%.2f m=%.2f trig=%d\n", p1.raw, p1.baseline, p1.pressure, m1, t1);
-                printf("P2 raw=%d base=%d pr=%.2f m=%.2f trig=%d\n", p2.raw, p2.baseline, p2.pressure, m2, t2);
-                printf("P3 raw=%d base=%d pr=%.2f m=%.2f trig=%d\n", p3.raw, p3.baseline, p3.pressure, m3, t3);
-                printf("P4 raw=%d base=%d pr=%.2f m=%.2f trig=%d\n\n", p4.raw, p4.baseline, p4.pressure, m4, t4);
+                printf("P1 raw=%d pr=%.2f m=%.2f trig=%d\n", p1.raw, p1.pressure, m1, t1);
+                printf("P2 raw=%d pr=%.2f m=%.2f trig=%d\n", p2.raw, p2.pressure, m2, t2);
+                printf("P3 raw=%d pr=%.2f m=%.2f trig=%d\n", p3.raw, p3.pressure, m3, t3);
+                printf("P4 raw=%d pr=%.2f m=%.2f trig=%d\n\n", p4.raw, p4.pressure, m4, t4);
             }
         }
 
