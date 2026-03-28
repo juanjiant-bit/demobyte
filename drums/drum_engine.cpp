@@ -1,23 +1,10 @@
-
 #include "drums/drum_engine.h"
 #include <cmath>
 
 namespace drums {
-namespace {
+
 static inline float softclip(float x) {
-    return x / (1.0f + 0.9f * fabsf(x));
-}
-
-static inline float sat(float x) {
-    return x / (1.0f + 1.45f * fabsf(x));
-}
-
-static inline float white(unsigned& s) {
-    s ^= s << 13;
-    s ^= s >> 17;
-    s ^= s << 5;
-    return (float)(s & 0xFFFFu) * (1.0f / 32767.5f) - 1.0f;
-}
+    return x / (1.0f + 0.8f * fabsf(x));
 }
 
 void DrumEngine::init() {
@@ -25,60 +12,99 @@ void DrumEngine::init() {
     snare_env_ = 0.0f;
     hat_env_ = 0.0f;
     kick_phase_ = 0.0f;
-    snare_tone_phase_ = 0.0f;
+    noise_ = 22222;
 }
 
-void DrumEngine::trigger_kick() { kick_env_ = 1.0f; }
+// =====================
+// TRIGGERS
+// =====================
+
+void DrumEngine::trigger_kick()  { kick_env_ = 1.0f; }
 void DrumEngine::trigger_snare() { snare_env_ = 1.0f; }
-void DrumEngine::trigger_hat() { hat_env_ = 1.0f; }
+void DrumEngine::trigger_hat()   { hat_env_ = 1.0f; }
 
 float DrumEngine::kick_env() const { return kick_env_; }
 
+// =====================
+// RENDER
+// =====================
+
+static inline float noise(uint32_t& s) {
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+    return (float)(s & 0xFFFF) / 32767.5f - 1.0f;
+}
+
 float DrumEngine::render(float color) {
+
     float out = 0.0f;
 
-    // Kick reformulado: más seno/sub, menos sweep raro.
-    if (kick_env_ > 0.0005f) {
-        const float env = kick_env_;
-        const float freq = 47.0f + 58.0f * env + 6.0f * color;
+    // =====================
+    // KICK (REHECHO BIEN)
+    // =====================
+    if (kick_env_ > 0.0001f) {
+
+        float env = kick_env_;
+
+        // 🔥 pitch drop corto (NO sweep raro)
+        float freq = 45.0f + 90.0f * env * env;
+
         kick_phase_ += freq / 44100.0f;
         if (kick_phase_ >= 1.0f) kick_phase_ -= 1.0f;
 
-        const float body = sinf(6.2831853f * kick_phase_);
-        const float sub  = sinf(3.1415926f * kick_phase_) * 0.72f;
-        const float click = (env > 0.90f) ? ((env - 0.90f) * 0.9f) : 0.0f;
+        float sine = sinf(6.2831853f * kick_phase_);
 
-        float k = (body * 0.68f + sub + click) * env;
-        k = sat(k * 2.05f);
-        out += k * 1.12f;
+        // 🔥 sub más fuerte
+        float sub = sinf(3.1415926f * kick_phase_) * 1.2f;
 
-        kick_env_ *= 0.99895f;
+        // 🔥 click muy corto
+        float click = (env > 0.85f) ? (env - 0.85f) * 4.0f : 0.0f;
+
+        float k = (sine * 0.6f + sub + click) * env;
+
+        // 🔥 saturación controlada
+        k *= 2.2f;
+        k = softclip(k);
+
+        out += k * 2.2f; // 🔥 MÁS VOLUMEN
+
+        // decay más musical
+        kick_env_ *= 0.9975f;
     }
 
-    if (snare_env_ > 0.0005f) {
-        float n = white(noise_);
-        snare_tone_phase_ += (165.0f + 95.0f * color) / 44100.0f;
-        if (snare_tone_phase_ >= 1.0f) snare_tone_phase_ -= 1.0f;
+    // =====================
+    // SNARE
+    // =====================
+    if (snare_env_ > 0.0001f) {
 
-        float tone = sinf(6.2831853f * snare_tone_phase_) * 0.18f;
-        float s = (n * 0.60f + tone) * snare_env_;
-        s = sat(s * 1.75f);
-        out += s * 0.95f;
+        float n = noise(noise_);
+        float tone = sinf(snare_env_ * 180.0f);
 
-        snare_env_ *= (0.9978f - 0.0004f * color);
+        float s = (n * 0.8f + tone * 0.2f) * snare_env_;
+
+        s *= 2.5f;
+        out += softclip(s);
+
+        snare_env_ *= 0.992f;
     }
 
-    if (hat_env_ > 0.0005f) {
-        float n = white(noise_);
-        float bright = (n >= 0.0f ? 1.0f : -1.0f) * sqrtf(fabsf(n));
-        float h = bright * hat_env_ * (0.20f + 0.10f * color);
-        h = sat(h * 1.9f);
-        out += h * 0.74f;
+    // =====================
+    // HIHAT
+    // =====================
+    if (hat_env_ > 0.0001f) {
 
-        hat_env_ *= (0.9926f - 0.0008f * color);
+        float n = noise(noise_);
+
+        float h = (n > 0 ? 1.0f : -1.0f) * hat_env_;
+
+        h *= 2.0f;
+        out += softclip(h);
+
+        hat_env_ *= 0.985f;
     }
 
     return softclip(out);
 }
 
-}  // namespace drums
+} // namespace drums
