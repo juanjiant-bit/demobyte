@@ -25,91 +25,177 @@ static inline float pulse_from_u32(uint32_t t, uint32_t div, float pw){
 }
 }
 
-void BytebeatEngine::init() {
-    t_ = 0;
+void BytebeatEngine::init(){
+    phase_ = 0.0f;
+    sub_phase_ = 0.0f;
     formula_a_ = 0;
     formula_b_ = 1;
     morph_ = 0.0f;
     color_ = 0.0f;
+    mod_ = 0.0f;
     pressure_ = 0.0f;
-    drone_on_ = false;
+    drone_on_ = true;
+    for (int i = 0; i < 6; ++i) history_[i] = 255;
+    hist_pos_ = 0;
 }
 
-void BytebeatEngine::set_morph(float x) {
-    morph_ = clamp01(x);
-}
+void BytebeatEngine::set_morph(float x){ morph_ = clamp01(x); }
+void BytebeatEngine::set_color(float x){ color_ = clamp01(x); }
+void BytebeatEngine::set_mod(float x){ mod_ = clamp01(x); }
+void BytebeatEngine::set_pressure(float x){ pressure_ = clamp01(x); }
+void BytebeatEngine::set_drone(bool on){ drone_on_ = on; }
 
-void BytebeatEngine::set_color(float x) {
-    color_ = clamp01(x);
-}
-
-void BytebeatEngine::set_drone(bool on) {
-    drone_on_ = on;
-}
-
-void BytebeatEngine::set_pressure(float x) {
-    pressure_ = clamp01(x);
-}
-
-void BytebeatEngine::next_formula_pair() {
-    // Banco más seguro: menos fórmulas agresivas / más repetibles musicalmente.
-    static const uint8_t safe_bank[4] = {0, 1, 3, 5};
-
+float BytebeatEngine::rand01(){
     lfsr_ ^= lfsr_ << 13;
     lfsr_ ^= lfsr_ >> 17;
     lfsr_ ^= lfsr_ << 5;
+    return (lfsr_ & 0xFFFFu) * (1.0f / 65535.0f);
+}
 
-    uint8_t next = safe_bank[lfsr_ & 3u];
-    if (next == formula_a_) next = safe_bank[(lfsr_ >> 4) & 3u];
-    if (next == formula_a_) next = safe_bank[((lfsr_ >> 8) & 3u)];
-    formula_a_ = next;
+uint8_t BytebeatEngine::pick_formula(){
+    // Banco conservador: menos fórmulas "tonales fijas" y menos harsh.
+    static const uint8_t safe_bank[14] = {
+        0,1,2,3,4,5,8,10,12,13,14,15,16,21
+    };
 
-    uint8_t nextb = safe_bank[(lfsr_ >> 10) & 3u];
-    if (nextb == formula_a_) nextb = safe_bank[(nextb + 1u) & 3u];
-    formula_b_ = nextb;
+    for (int tries = 0; tries < 24; ++tries) {
+        uint8_t cand = safe_bank[static_cast<int>(rand01() * 14.0f) % 14];
+
+        bool repeated = false;
+        for (int i = 0; i < 6; ++i) {
+            if (history_[i] == cand) { repeated = true; break; }
+        }
+        if (repeated) continue;
+
+        if (mod_ < 0.35f && cand >= 14u && rand01() < 0.70f) continue;
+
+        history_[hist_pos_] = cand;
+        hist_pos_ = (hist_pos_ + 1u) % 6u;
+        return cand;
+    }
+
+    uint8_t fallback = safe_bank[static_cast<int>(rand01() * 14.0f) % 14];
+    history_[hist_pos_] = fallback;
+    hist_pos_ = (hist_pos_ + 1u) % 6u;
+    return fallback;
+}
+
+void BytebeatEngine::randomize_on_boot(){
+    next_formula_pair();
+    next_formula_pair();
+}
+
+void BytebeatEngine::next_formula_pair(){
+    formula_a_ = pick_formula();
+    formula_b_ = pick_formula();
+    if (formula_b_ == formula_a_) {
+        formula_b_ = (formula_a_ + 1u) % 24u;
+    }
 }
 
 float BytebeatEngine::eval_formula(uint8_t id, uint32_t t) const {
-    switch (id % 6u) {
+    switch(id % 24u){
         default:
-        case 0: return norm8(((t >> 5) | (t >> 7) | (t * 3u)));
-        case 1: return 0.72f * tri_from_u32(t, 1536u) + 0.14f * norm8(t >> 6);
-        case 2: return 0.66f * pulse_from_u32(t, 2048u, 0.24f) + 0.16f * tri_from_u32(t, 896u);
-        case 3: return norm8((((t >> 4) * (t >> 7)) | (t >> 8)));
-        case 4: return norm8(((t * 5u & (t >> 7)) | (t * 3u & (t >> 10))));
-        case 5: return norm8(((t >> 5) ^ (t >> 8) ^ (t * 3u)));
+        case 0:  return norm8(((t >> 6) | (t >> 8) | (t * 3u)));
+        case 1:  return 0.72f * tri_from_u32(t, 1536u) + 0.16f * norm8(t >> 5);
+        case 2:  return 0.68f * pulse_from_u32(t, 2048u, 0.24f) + 0.18f * tri_from_u32(t, 896u);
+        case 3:  return norm8(((t >> 5) * (t >> 8)));
+        case 4:  return 0.64f * tri_from_u32(t, 1200u) + 0.16f * pulse_from_u32(t, 700u, 0.12f);
+        case 5:  return norm8(((t * 3u & (t >> 10)) | (t * 5u & (t >> 12))));
+        case 6: {
+            float a = sinf(float(t) * 0.0032f);
+            float b = sinf(float(t) * 0.0017f);
+            float c = sinf(float(t) * 0.0009f);
+            return a * 0.46f + b * 0.24f + c * 0.10f;
+        }
+        case 7: {
+            float a = sinf(float(t) * 0.0035f);
+            float b = sinf(float(t) * 0.00525f);
+            return (a > b ? 1.0f : -1.0f) * 0.50f + a * 0.16f;
+        }
+        case 8: {
+            float a = tri_from_u32(t, 960u);
+            float b = sinf(float(t) * 0.0022f);
+            return a * 0.48f + b * 0.18f;
+        }
+        case 9: {
+            float a = sinf(float(t) * 0.0023f);
+            float b = sinf(float(t) * 0.00071f);
+            return sinf((a + b) * 2.2f) * 0.68f;
+        }
+        case 10: {
+            float a = sinf(float(t) * 0.0012f);
+            float b = tri_from_u32(t, 900u);
+            return a * 0.28f + b * 0.36f;
+        }
+        case 11: {
+            float a = sinf(float(t) * 0.0048f);
+            float b = sinf(float(t) * 0.0032f);
+            float c = pulse_from_u32(t, 1500u, 0.22f);
+            return a * 0.30f + b * 0.22f + c * 0.24f;
+        }
+        case 12: return norm8(((t >> 4) | (t >> 7) | (t * 5u))) * 0.42f + sinf(float(t) * 0.0024f) * 0.18f;
+        case 13: return norm8(((t * 9u & (t >> 5)) | (t * 3u & (t >> 9)))) * 0.46f + tri_from_u32(t, 640u) * 0.16f;
+        case 14: return pulse_from_u32(t, 800u, 0.12f) * 0.28f + sinf(float(t) * 0.005f) * 0.08f + norm8(t >> 5) * 0.10f;
+        case 15: return 0.42f * tri_from_u32(t, 520u) + 0.18f * pulse_from_u32(t, 310u, 0.08f);
+        case 16: return norm8(((t >> 3) * (t >> 6)) | (t >> 9)) * 0.48f + sinf(float(t) * 0.0012f) * 0.10f;
+        case 17: return pulse_from_u32(t, 512u, 0.33f) * 0.24f + tri_from_u32(t, 370u) * 0.30f + sinf(float(t) * 0.008f) * 0.08f;
+        case 18: return norm8(((t >> 3) ^ (t >> 6) ^ (t * 7u))) * 0.58f;
+        case 19: return norm8(((t * 11u & (t >> 4)) | (t * 7u & (t >> 7)) | (t * 5u & (t >> 10)))) * 0.58f;
+        case 20: return norm8(((t * ((t >> 9) | (t >> 13))) & 255u)) * 0.58f;
+        case 21: return 0.40f * pulse_from_u32(t, 170u, 0.23f) + 0.26f * tri_from_u32(t, 123u);
+        case 22: return sinf(float(t) * 0.016f + sinf(float(t) * 0.0014f) * 1.1f) * 0.64f;
+        case 23: return norm8(((t >> 2) ^ (t >> 5) ^ (t >> 8) ^ (t * 9u))) * 0.76f;
     }
 }
 
 float BytebeatEngine::softclip(float x) const {
-    return x / (1.0f + 0.70f * fabsf(x));
+    return x / (1.0f + 0.75f * fabsf(x));
 }
 
-float BytebeatEngine::render() {
-    // Más grave por defecto para sacar el mosquito fijo.
-    const uint32_t base_step = drone_on_ ? 1u : 1u;
-    const uint32_t color_step = static_cast<uint32_t>(color_ * 3.0f);
-    t_ += ((base_step + color_step) >> 1);
+float BytebeatEngine::render(){
+    const float live = clamp01(color_);
+    const float press = clamp01(pressure_);
+    const float mod_curve = powf(clamp01(mod_), 0.40f);
 
-    const float a = eval_formula(formula_a_, t_);
-    const float b = eval_formula(formula_b_, t_);
+    // Mucho más grave por defecto.
+    const float step =
+        0.02f +
+        mod_curve * 2.20f +
+        live * 0.20f;
+
+    const float tape = 1.0f - 0.65f * press;
+    const float adv = step * tape * (drone_on_ ? 1.0f : 1.18f);
+
+    phase_ += adv;
+    sub_phase_ += adv * 0.07f;
+
+    const uint32_t t  = static_cast<uint32_t>(phase_);
+    const uint32_t ts = static_cast<uint32_t>(sub_phase_);
+
+    const float a = eval_formula(formula_a_, t);
+    // Sacamos el offset exagerado entre A y B.
+    const float b = eval_formula(formula_b_, t + (ts >> 3));
     float x = lerp(a, b, morph_);
 
-    // Muchísimo menos tilt agudo.
-    const float prev = eval_formula(formula_a_, (t_ > 0u) ? t_ - 1u : 0u);
-    const float hp = x - 0.10f * prev;
-    x = x * (1.0f - 0.18f * color_) + hp * (0.18f * color_);
+    // Tilt MUY suave: el bloque anterior te generaba el mosquito.
+    const float prev = eval_formula(formula_a_, (t > 0u) ? t - 1u : 0u);
+    const float hp = x - 0.05f * prev;
+    x = x * (1.0f - 0.08f * live) + hp * (0.08f * live);
 
-    // Drive más suave.
-    float drive = 0.78f + 0.28f * color_ + 0.16f * pressure_;
+    // Sin seno fija. Cuerpo muy suave y no tonal.
+    x += tri_from_u32(t, 4000u) * 0.025f * (1.0f - mod_curve);
+
+    // Un poquito menos de drive total.
+    float drive = 0.82f + 0.08f * live + 0.10f * press + 0.06f * mod_curve;
     x *= drive;
+    x *= 0.66f;
 
-    // Low-pass muy simple para matar el pedal agudo constante.
+    // Low-pass interno para matar el pedal agudo.
     static float lp = 0.0f;
-    lp += 0.07f * (x - lp);
+    lp += 0.045f * (x - lp);
     x = lp;
 
-    x *= 0.82f;
     return softclip(x);
 }
 

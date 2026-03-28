@@ -6,7 +6,7 @@
 namespace master {
 namespace {
 static inline float softclip(float x) {
-    return x / (1.0f + 0.55f * fabsf(x));
+    return x / (1.0f + 0.85f * fabsf(x));
 }
 }
 
@@ -22,26 +22,22 @@ void Master::set_volume(float x) {
 }
 
 float Master::process(float x) {
-    // DC block MUY suave. Menos realce agudo que la versión anterior.
+    // DC-block mucho más suave
     float hp = x - dc_x1_ + 0.9992f * hp_y1_;
     dc_x1_ = x;
     hp_y1_ = hp;
 
-    // Compresión mucho más suave
+    // Compresión muy leve: la anterior levantaba demasiado los agudos constantes.
     const float a = fabsf(hp);
-    env_ += 0.0018f * (a - env_);
-
+    env_ += 0.0012f * (a - env_);
     float gain = 1.0f;
     if (env_ > 0.55f) {
         gain = 0.55f / env_;
     }
 
     hp *= gain;
-
-    // Menos make-up gain: este era uno de los grandes culpables del "mosquito"
-    hp *= 1.15f;
+    hp *= 1.05f;   // antes 1.90f
     hp *= volume_;
-
     return softclip(hp);
 }
 
