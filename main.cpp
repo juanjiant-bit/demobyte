@@ -1,4 +1,4 @@
-
+#include <cstdio>
 #include "pico/stdlib.h"
 #include "audio/audio_output_i2s.h"
 #include "io/pads.h"
