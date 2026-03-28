@@ -54,23 +54,29 @@ int main() {
             g_synth.set_morph(controls::morph());
             g_synth.set_color(controls::color());
 
-            // IMPORTANTE:
-            // El aftertouch/transposición del motor SOLO lo maneja el pad 1.
-            // Si cualquier pad de batería está activo, anulamos pressure para
-            // que no meta un gate de transpose adicional por crosstalk.
-            const bool drum_pad_active = p2.pressed || p3.pressed || p4.pressed;
-            g_synth.set_pressure((p1.pressed && !drum_pad_active) ? p1.pressure : 0.0f);
+            // Clave:
+            // solo el pad 1 gobierna la presión del motor,
+            // y se cancela completamente cuando hay pads de drums activos.
+            const bool drum_pad_active =
+                p2.pressed || p3.pressed || p4.pressed ||
+                p2.trigger || p3.trigger || p4.trigger;
+
+            const float synth_pressure =
+                (p1.pressed && !drum_pad_active) ? p1.pressure : 0.0f;
+
+            g_synth.set_pressure(synth_pressure);
 
             g_master.set_volume(controls::volume());
         }
 
         const float color = controls::color();
+
         float bb = g_synth.render();
-        const float duck = 1.0f - 0.42f * g_drums.kick_env();
+        const float duck = 1.0f - 0.45f * g_drums.kick_env();
         float drum = g_drums.render(color);
 
-        // Drums bastante más presentes sin aplastar el motor.
-        float mix = bb * duck * 0.90f + drum * 1.40f;
+        // Drums más presentes para que no queden enterrados.
+        float mix = bb * duck * 0.92f + drum * 1.18f;
         mix = g_master.process(mix);
 
         const int16_t s = f_to_i16(mix);
