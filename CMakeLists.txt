@@ -1,3 +1,4 @@
+
 cmake_minimum_required(VERSION 3.13)
 
 if(NOT DEFINED PICO_SDK_PATH)
@@ -25,6 +26,7 @@ add_executable(dem0byt3_pad_i2s_test
     main.cpp
     audio/audio_output_i2s.cpp
     io/pads.cpp
+    drums/drum_engine.cpp
 )
 
 pico_generate_pio_header(dem0byt3_pad_i2s_test
