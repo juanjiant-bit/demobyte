@@ -5,7 +5,7 @@
 namespace master {
 namespace {
 static inline float softclip(float x) {
-    return x / (1.0f + fabsf(x));
+    return x / (1.0f + 0.35f * fabsf(x));
 }
 }
 
@@ -21,22 +21,15 @@ void Master::set_volume(float x) {
 }
 
 float Master::process(float x) {
-    // DC-block / gentle HP
-    float hp = x - dc_x1_ + 0.995f * hp_y1_;
+    // DC block mucho más suave
+    float hp = x - dc_x1_ + 0.9992f * hp_y1_;
     dc_x1_ = x;
     hp_y1_ = hp;
 
-    // simple compressor
-    const float a = fabsf(hp);
-    env_ += 0.0045f * (a - env_);
-    float gain = 1.0f;
-    if (env_ > 0.34f) {
-        gain = 0.34f / env_;
-    }
-
-    hp *= gain;
-    hp *= 1.90f;   // make-up gain
+    // Sin compresión agresiva ni make-up desmedido
+    hp *= 1.00f;
     hp *= volume_;
+
     return softclip(hp);
 }
 

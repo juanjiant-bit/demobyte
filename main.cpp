@@ -76,7 +76,7 @@ int main() {
         float drum = g_drums.render(color);
 
         // Drums más presentes para que no queden enterrados.
-        float mix = bb * duck * 0.92f + drum * 1.18f;
+        float mix = bb * duck * 0.75f + drum * 1.6f;
         mix = g_master.process(mix);
 
         const int16_t s = f_to_i16(mix);
