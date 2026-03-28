@@ -167,15 +167,18 @@ float BytebeatEngine::eval_formula(uint8_t id, uint32_t t) const {
 float BytebeatEngine::softclip(float x) const {
     return x / (1.0f + 0.75f * fabsf(x));
 }
-
 float BytebeatEngine::render() {
-    // Igual paleta, pero el clock usa acumulador flotante.
-    // Esto quita la sensación de sample-rate recortado al barrer frecuencia.
-    const float centered = (color_ - 0.5f) * 2.0f;  // -1..1
-    const float ratio = powf(3.0f, centered);       // 1/3..3
-    const float base = drone_on_ ? 1.5f : 3.0f;
-    const float slow_from_pressure = 1.0f - 0.55f * pressure_;
-    const float step = base * ratio * slow_from_pressure;
+
+    t_ += 1; // 🔥 EXACTAMENTE como TouchBit
+
+    float a = eval_formula(formula_a_, t_);
+    float b = eval_formula(formula_b_, t_);
+
+    float x = a + (b - a) * morph_;
+
+    return x * 0.6f; // sin nada más
+}
+
 
     g_phase_accum += step;
     if (g_phase_accum < 0.0f) g_phase_accum = 0.0f;
