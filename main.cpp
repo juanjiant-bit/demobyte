@@ -5,14 +5,11 @@
 #include "synth/bytebeat_engine.h"
 #include "drums/drum_engine.h"
 #include "master/master.h"
-#include <algorithm>
 
 static audio::AudioOutputI2S g_i2s;
 static synth::BytebeatEngine g_synth;
 static drums::DrumEngine g_drums;
 static master::Master g_master;
-
-static bool g_drone = true;
 
 static inline int16_t f_to_i16(float x) {
     if (x > 1.0f) x = 1.0f;
@@ -26,41 +23,45 @@ static inline float clamp01(float x) {
     return x;
 }
 
-// Misma métrica que ya funcionó en el pad-test.
-// En tu hardware real, raw en reposo ronda ~19..25 y al tocar sube bastante.
-// Aprovechamos esa separación para derivar triggers estables sin depender de p.trigger.
-static inline float pad_metric(const controls::PadState& p) {
-    if (p.raw <= 25) {
-        return p.pressure > 0.0f ? p.pressure : 0.0f;
-    }
+// IMPORTANTE:
+// En la integración anterior el trigger usaba max(raw_metric, pressure),
+// y eso deja puerta a falsos disparos porque pressure sigue viva un rato.
+// Acá el TRIGGER sale SOLO de raw.
+// El aftertouch sigue viniendo SOLO de pressure.
+static inline float raw_gate_metric(const controls::PadState& p) {
+    // Reposo medido: ~19..25
+    // Toque suave: ~100
+    // Dejamos una zona muerta amplia para evitar fantasmas.
+    if (p.raw <= 40) return 0.0f;
 
-    float m = float(int(p.raw) - 25) / 75.0f; // 25..100 -> 0..1 aprox
+    float m = float(int(p.raw) - 40) / 60.0f; // 40..100 -> 0..1
     if (m < 0.0f) m = 0.0f;
     if (m > 1.0f) m = 1.0f;
-
-    if (p.pressure > m) m = p.pressure;
     return m;
 }
 
 int main() {
     stdio_init_all();
+    sleep_ms(1200);   // igual que en el pad-test que sí funcionó
 
     controls::init();
     g_i2s.init();
     g_synth.init();
     g_drums.init();
     g_master.init();
-    g_synth.set_drone(g_drone);
+    g_synth.set_drone(true);
 
     absolute_time_t last = get_absolute_time();
 
-    // Trigger limpio con edge detect + lockout corto por pad
     bool prev_gate[4] = {false, false, false, false};
     uint32_t lockout_ms[4] = {0, 0, 0, 0};
 
-    constexpr float kTrig = 0.20f;
-    constexpr float kRel  = 0.08f;
-    constexpr uint32_t kLockout = 90;
+    constexpr float kTrig = 0.18f;
+    constexpr float kRel  = 0.07f;
+    constexpr uint32_t kLockout = 110;
+
+    // ignorar triggers en el arranque mientras todo se estabiliza
+    const uint32_t boot_ignore_until = to_ms_since_boot(get_absolute_time()) + 1500;
 
     while (true) {
         const absolute_time_t now = get_absolute_time();
@@ -76,17 +77,17 @@ int main() {
             const auto& p4 = controls::pad(3);
 
             const float m[4] = {
-                pad_metric(p1),
-                pad_metric(p2),
-                pad_metric(p3),
-                pad_metric(p4)
+                raw_gate_metric(p1),
+                raw_gate_metric(p2),
+                raw_gate_metric(p3),
+                raw_gate_metric(p4)
             };
 
             for (int i = 0; i < 4; ++i) {
                 const bool gate = m[i] > kTrig;
                 bool trig = false;
 
-                if (now_ms > lockout_ms[i]) {
+                if (now_ms > boot_ignore_until && now_ms > lockout_ms[i]) {
                     trig = gate && !prev_gate[i];
                 }
 
@@ -94,8 +95,7 @@ int main() {
                     lockout_ms[i] = now_ms + kLockout;
 
                     if (i == 0) {
-                        g_drone = !g_drone;
-                        g_synth.set_drone(g_drone);
+                        // SOLO random fórmula. No toggle de drone.
                         g_synth.next_formula_pair();
                     } else if (i == 1) {
                         g_drums.trigger_kick();
@@ -113,8 +113,8 @@ int main() {
             g_synth.set_morph(controls::morph());
             g_synth.set_color(controls::color());
 
-            // Mantener aftertouch expresivo en pad 1
-            g_synth.set_pressure(std::max(p1.pressure, m[0]));
+            // Aftertouch expresivo SOLO desde pressure del pad 1
+            g_synth.set_pressure(clamp01(p1.pressure));
 
             g_master.set_volume(controls::volume());
         }
